@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WaterWall Control</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        table, th, td {
+            border: 1px solid black;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+        }
+        canvas {
+            max-width: 100%;
+            height: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>WaterWall Control</h1>
+    <table id="processTable">
+        <thead>
+            <tr>
+                <th>PID</th>
+                <th>Name</th>
+                <th>Traffic Usage</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        </tbody>
+    </table>
+    <canvas id="trafficChart"></canvas>
+    <script>
+        async function fetchProcesses() {
+            const response = await fetch('/processes');
+            const processes = await response.json();
+            const tableBody = document.querySelector('#processTable tbody');
+            tableBody.innerHTML = '';
+            processes.forEach(process => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${process.pid}</td>
+                    <td>${process.name}</td>
+                    <td>${process.traffic_usage} bytes</td>
+                    <td>
+                        <button ${process.blocked ? 'disabled' : ''} onclick="blockProcess(${process.pid})">Block</button>
+                        <button ${!process.blocked ? 'disabled' : ''} onclick="unblockProcess(${process.pid})">Unblock</button>
+                        <input type="number" id="limit${process.pid}" min="0" max="100" placeholder="Limit %" value="${process.limit || ''}">
+                        <button onclick="setLimit(${process.pid})">Set Limit</button>
+                    </td>
+                `;
+                tableBody.appendChild(row);
+            });
+            updateChart(processes);
+        }
+
+        async function blockProcess(pid) {
+            await fetch('/block', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ pid })
+            });
+            fetchProcesses();
+        }
+
+        async function unblockProcess(pid) {
+            await fetch('/unblock', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ pid })
+            });
+            fetchProcesses();
+        }
+
+        async function setLimit(pid) {
+            const limit = document.getElementById(`limit${pid}`).value;
+            await fetch('/limit', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ pid, percentage: limit })
+            });
+            fetchProcesses();
+        }
+
+        function updateChart(processes) {
+            const labels = processes.map(p => p.name);
+            const data = processes.map(p => p.traffic_usage);
+            const ctx = document.getElementById('trafficChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Traffic Usage (bytes)',
+                        data: data,
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+
+        fetchProcesses();
+        setInterval(fetchProcesses, 5000); // Refresh every 5 seconds
+    </script>
+</body>
+</html>
