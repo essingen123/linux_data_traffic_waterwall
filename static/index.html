@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WaterWall Control</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.9.4/css/bulma.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/spin.js/2.3.2/spin.min.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -28,7 +29,7 @@
         #intervalInput {
             margin-right: 10px;
         }
-        #analyzeButton, #intruderButton, #darkModeButton, #colorButton, #confettiButton, #synthesizeButton {
+        #analyzeButton, #intruderButton, #darkModeButton, #colorButton, #confettiButton, #synthesizeButton, #refreshButton {
             margin-top: 20px;
             margin-right: 10px;
         }
@@ -50,55 +51,110 @@
             90% { transform: translate(1px, 2px) rotate(0deg); }
             100% { transform: translate(1px, -2px) rotate(-1deg); }
         }
+        @keyframes gradient {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        .loading {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 10000;
+        }
+        .loading .spinner {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 50px;
+            height: 50px;
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
-    <h1>WaterWall Control</h1>
-    <div>
-        <label for="intervalInput">Refresh Interval (ms):</label>
-        <input type="number" id="intervalInput" value="5000">
-        <button onclick="setIntervalTime()">Set Interval</button>
-    </div>
-    <table id="processTable">
-        <thead>
-            <tr>
-                <th onclick="sortTable(0)">PID</th>
-                <th onclick="sortTable(1)">Name</th>
-                <th onclick="sortTable(2)">Traffic Usage</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-        </tbody>
-    </table>
-    <canvas id="trafficChart"></canvas>
-    <button id="analyzeButton" onclick="analyzeCyberSpaceHaze()">AI Analyze Cyber Space Haze</button>
-    <button id="intruderButton" onclick="intruderWaterPlay()">IntruderWaterPlay</button>
-    <button id="darkModeButton" onclick="toggleDarkMode()">Toggle Dark Mode</button>
-    <button id="colorButton" onclick="changeBackgroundColor()">Random Color</button>
-    <button id="confettiButton" onclick="confettiEffect()">Confetti</button>
-    <button id="synthesizeButton" onclick="synthesizeLFOEnvenlopeEqualizerNoiseVocoderFFTDataStream()">SynthesizeLFOEnvenlopeEqualizerNoiseVocoderFFTDataStream</button>
-    <textarea id="analysisTextarea"></textarea>
+    <section class="section">
+        <div class="container">
+            <h1 class="title">WaterWall Control</h1>
+            <div class="buttons">
+                <button class="button is-primary" onclick="refreshData()">Refresh</button>
+                <button class="button is-dark" onclick="toggleDarkMode()">Toggle Dark Mode</button>
+                <button class="button is-info" onclick="analyzeCyberSpaceHaze()">AI Analyze Cyber Space Haze</button>
+                <button class="button is-warning" onclick="intruderWaterPlay()">IntruderWaterPlay</button>
+                <button class="button is-danger" onclick="confettiEffect()">Confetti</button>
+                <button class="button is-success" onclick="synthesizeLFOEnvenlopeEqualizerNoiseVocoderFFTDataStream()">Synthesize LFO Envelope Equalizer Noise Vocoder FFT Data Stream</button>
+                <button class="button is-link" onclick="changeBackgroundColor()">Random Color</button>
+            </div>
+            <div>
+                <label for="intervalInput">Refresh Interval (ms):</label>
+                <input type="number" id="intervalInput" value="5000">
+                <button onclick="setIntervalTime()">Set Interval</button>
+            </div>
+            <canvas id="trafficChart"></canvas>
+            <table id="processTable">
+                <thead>
+                    <tr>
+                        <th onclick="sortTable(0)">PID [A]/[D]</th>
+                        <th onclick="sortTable(1)">Name [A]/[D]</th>
+                        <th onclick="sortTable(2)">Traffic Usage (bytes) [A]/[D]</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                </tbody>
+            </table>
+            <textarea id="analysisTextarea"></textarea>
+            <div class="loading">
+                <div class="spinner"></div>
+            </div>
+        </div>
+    </section>
     <script>
+        const dgei = document.getElementById.bind(document);
+        const dqsel = document.querySelector.bind(document);
+        const dqselAll = document.querySelectorAll.bind(document);
+
         let intervalTime = 5000;
         let intervalId;
         let isDarkMode = false;
+        let colorIndex = 0;
+        let sortOrder = 'desc';
+        const colorSchemes = [
+            { bg: '#f8f9fa', text: '#212529' },
+            { bg: '#e9ecef', text: '#343a40' },
+            { bg: '#dee2e6', text: '#495057' },
+            { bg: '#ced4da', text: '#6c757d' },
+            { bg: '#adb5bd', text: '#868e96' }
+        ];
 
         async function fetchProcesses() {
-            const response = await fetch('/processes');
+            dqsel('.loading').style.display = 'block';
+            const response = await fetch(`/processes?sort=${sortOrder}`);
             const processes = await response.json();
             if (processes.error) {
                 alert(processes.error);
                 return;
             }
-            const tableBody = document.querySelector('#processTable tbody');
+            const tableBody = dqsel('#processTable tbody');
             tableBody.innerHTML = '';
             processes.forEach(process => {
                 const row = document.createElement('tr');
                 row.innerHTML = `
                     <td>${process.pid}</td>
                     <td>${process.name}</td>
-                    <td>${process.traffic_usage} bytes</td>
+                    <td>${process.traffic_usage} bytes (${process.traffic_usage_mb.toFixed(2)} MB)</td>
                     <td>
                         <button ${process.blocked ? 'disabled' : ''} onclick="blockProcess(${process.pid})">Block</button>
                         <button ${!process.blocked ? 'disabled' : ''} onclick="unblockProcess(${process.pid})">Unblock</button>
@@ -109,6 +165,7 @@
                 tableBody.appendChild(row);
             });
             updateChart(processes);
+            dqsel('.loading').style.display = 'none';
         }
 
         async function blockProcess(pid) {
@@ -134,7 +191,7 @@
         }
 
         async function setLimit(pid) {
-            const limit = document.getElementById(`limit${pid}`).value;
+            const limit = dgei(`limit${pid}`).value;
             await fetch('/limit', {
                 method: 'POST',
                 headers: {
@@ -148,7 +205,7 @@
         function updateChart(processes) {
             const labels = processes.map(p => p.name);
             const data = processes.map(p => p.traffic_usage);
-            const ctx = document.getElementById('trafficChart').getContext('2d');
+            const ctx = dgei('trafficChart').getContext('2d');
             new Chart(ctx, {
                 type: 'bar',
                 data: {
@@ -173,28 +230,29 @@
 
         function setIntervalTime() {
             clearInterval(intervalId);
-            intervalTime = parseInt(document.getElementById('intervalInput').value, 10);
+            intervalTime = parseInt(dgei('intervalInput').value, 10);
             intervalId = setInterval(fetchProcesses, intervalTime);
         }
 
         function sortTable(columnIndex) {
-            const table = document.getElementById('processTable');
+            const table = dgei('processTable');
             const rows = Array.from(table.rows).slice(1);
             const isNumber = columnIndex === 0 || columnIndex === 2;
             rows.sort((a, b) => {
                 const aValue = a.cells[columnIndex].textContent.trim();
                 const bValue = b.cells[columnIndex].textContent.trim();
                 if (isNumber) {
-                    return parseInt(aValue, 10) - parseInt(bValue, 10);
+                    return (sortOrder === 'asc' ? 1 : -1) * (parseInt(aValue, 10) - parseInt(bValue, 10));
                 } else {
-                    return aValue.localeCompare(bValue);
+                    return (sortOrder === 'asc' ? 1 : -1) * aValue.localeCompare(bValue);
                 }
             });
             rows.forEach(row => table.tBodies[0].appendChild(row));
+            sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
         }
 
         function analyzeCyberSpaceHaze() {
-            const textarea = document.getElementById('analysisTextarea');
+            const textarea = dgei('analysisTextarea');
             textarea.style.display = 'block';
             textarea.value = JSON.stringify(fetchProcesses(), null, 2);
         }
@@ -245,8 +303,16 @@
             }, 5000);
         }
 
+        function changeColorScheme() {
+            colorIndex = (colorIndex + 1) % colorSchemes.length;
+            const scheme = colorSchemes[colorIndex];
+            document.body.style.backgroundColor = scheme.bg;
+            document.body.style.color = scheme.text;
+        }
+
         fetchProcesses();
         intervalId = setInterval(fetchProcesses, intervalTime);
+        setInterval(changeColorScheme, 30000); // Change color scheme every 30 seconds
     </script>
 </body>
 </html>

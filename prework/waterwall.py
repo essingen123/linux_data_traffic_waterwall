@@ -3,10 +3,6 @@ import subprocess
 import json
 import webbrowser
 from flask import Flask, request, jsonify, send_from_directory
-import logging
-
-# Author: Kilian Lindberg
-# License: MIT+%303*
 
 try:
     import psutil
@@ -20,15 +16,11 @@ app = Flask(__name__)
 # File to store the state
 STATE_FILE = 'waterwall_state.json'
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 # Check if the script is run as root
 def check_root():
     if os.geteuid() != 0:
-        logger.error("This script must be run as root. Please use 'sudo' to run the script.")
-        logger.error("To preserve your aliases, run the script with: sudo -E python waterwall.py")
+        print("This script must be run as root. Please use 'sudo' to run the script.")
+        print("To preserve your aliases, run the script with: sudo -E python waterwall.py")
         exit(1)
 
 # Load the state from the file
@@ -49,16 +41,16 @@ def get_processes():
 
 # Block traffic for a specific process
 def block_process(pid):
-    subprocess.run(["iptables", "-A", "OUTPUT", "-m", "owner", "--uid-owner", str(pid), "-j", "DROP"])
+    subprocess.call(f"iptables -A OUTPUT -m owner --uid-owner {pid} -j DROP", shell=True)
 
 # Unblock traffic for a specific process
 def unblock_process(pid):
-    subprocess.run(["iptables", "-D", "OUTPUT", "-m", "owner", "--uid-owner", str(pid), "-j", "DROP"])
+    subprocess.call(f"iptables -D OUTPUT -m owner --uid-owner {pid} -j DROP", shell=True)
 
 # Set traffic limit for a process (as a percentage of total bandwidth)
 def set_traffic_limit(pid, percentage):
     bandwidth_limit = int(1024 * 1024 * percentage / 100)  # Convert to bytes per second
-    subprocess.run(["iptables", "-A", "OUTPUT", "-m", "owner", "--uid-owner", str(pid), "-m", "limit", "--limit-burst", str(bandwidth_limit), "-j", "ACCEPT"])
+    subprocess.call(f"iptables -A OUTPUT -m owner --uid-owner {pid} -m limit --limit-burst {bandwidth_limit} -j ACCEPT", shell=True)
 
 # Get the current traffic usage for a process
 def get_traffic_usage(pid):
@@ -66,9 +58,6 @@ def get_traffic_usage(pid):
         p = psutil.Process(pid)
         io_counters = p.io_counters()
         return io_counters.read_bytes + io_counters.write_bytes
-    except psutil.NoSuchProcess:
-        logger.warning(f"Process with PID {pid} no longer exists.")
-        return 0
     except psutil.AccessDenied:
         raise PermissionError("Permission denied. Please run with sudo.")
 
@@ -82,16 +71,14 @@ def list_processes():
             pid = p['pid']
             name = p['name']
             traffic_usage = get_traffic_usage(pid)
-            traffic_usage_mb = traffic_usage / (1024 * 1024)
-            process_info.append({'pid': pid, 'name': name, 'traffic_usage': traffic_usage, 'traffic_usage_mb': traffic_usage_mb, 'blocked': state.get(pid, {}).get('blocked', False), 'limit': state.get(pid, {}).get('limit', None)})
+            process_info.append({'pid': pid, 'name': name, 'traffic_usage': traffic_usage, 'blocked': state.get(pid, {}).get('blocked', False), 'limit': state.get(pid, {}).get('limit', None)})
 
         # Sort processes by traffic usage
-        sort_order = request.args.get('sort', 'desc')
+        sort_order = request.args.get('sort', 'asc')
         process_info.sort(key=lambda x: x['traffic_usage'], reverse=(sort_order == 'desc'))
 
         return jsonify(process_info)
     except PermissionError as e:
-        logger.error(str(e))
         return jsonify({'error': str(e)}), 500
 
 @app.route('/block', methods=['POST'])
@@ -141,8 +128,7 @@ def create_static_files():
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WaterWall Control</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.9.4/css/bulma.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/spin.js/2.3.2/spin.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -166,7 +152,7 @@ def create_static_files():
         #intervalInput {
             margin-right: 10px;
         }
-        #analyzeButton, #intruderButton, #darkModeButton, #colorButton, #confettiButton, #synthesizeButton, #refreshButton {
+        #analyzeButton, #intruderButton, #darkModeButton, #colorButton, #confettiButton, #synthesizeButton {
             margin-top: 20px;
             margin-right: 10px;
         }
@@ -193,71 +179,35 @@ def create_static_files():
             50% { background-position: 100% 50%; }
             100% { background-position: 0% 50%; }
         }
-        .loading {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            z-index: 10000;
-        }
-        .loading .spinner {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 50px;
-            height: 50px;
-            border: 5px solid #f3f3f3;
-            border-top: 5px solid #3498db;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
     </style>
 </head>
 <body>
-    <section class="section">
-        <div class="container">
-            <h1 class="title">WaterWall Control</h1>
-            <div class="buttons">
-                <button class="button is-primary" onclick="refreshData()">Refresh</button>
-                <button class="button is-dark" onclick="toggleDarkMode()">Toggle Dark Mode</button>
-                <button class="button is-info" onclick="analyzeCyberSpaceHaze()">AI Analyze Cyber Space Haze</button>
-                <button class="button is-warning" onclick="intruderWaterPlay()">IntruderWaterPlay</button>
-                <button class="button is-danger" onclick="confettiEffect()">Confetti</button>
-                <button class="button is-success" onclick="synthesizeLFOEnvenlopeEqualizerNoiseVocoderFFTDataStream()">Synthesize LFO Envelope Equalizer Noise Vocoder FFT Data Stream</button>
-                <button class="button is-link" onclick="changeBackgroundColor()">Random Color</button>
-            </div>
-            <div>
-                <label for="intervalInput">Refresh Interval (ms):</label>
-                <input type="number" id="intervalInput" value="5000">
-                <button onclick="setIntervalTime()">Set Interval</button>
-            </div>
-            <canvas id="trafficChart"></canvas>
-            <table id="processTable">
-                <thead>
-                    <tr>
-                        <th onclick="sortTable(0)">PID [A]/[D]</th>
-                        <th onclick="sortTable(1)">Name [A]/[D]</th>
-                        <th onclick="sortTable(2)">Traffic Usage (bytes) [A]/[D]</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                </tbody>
-            </table>
-            <textarea id="analysisTextarea"></textarea>
-            <div class="loading">
-                <div class="spinner"></div>
-            </div>
-        </div>
-    </section>
+    <h1>WaterWall Control</h1>
+    <div>
+        <label for="intervalInput">Refresh Interval (ms):</label>
+        <input type="number" id="intervalInput" value="5000">
+        <button onclick="setIntervalTime()">Set Interval</button>
+    </div>
+    <canvas id="trafficChart"></canvas>
+    <table id="processTable">
+        <thead>
+            <tr>
+                <th onclick="sortTable(0)">PID [A]/[D]</th>
+                <th onclick="sortTable(1)">Name [A]/[D]</th>
+                <th onclick="sortTable(2)">Traffic Usage [A]/[D]</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        </tbody>
+    </table>
+    <button id="analyzeButton" onclick="analyzeCyberSpaceHaze()">AI Analyze Cyber Space Haze</button>
+    <button id="intruderButton" onclick="intruderWaterPlay()">IntruderWaterPlay</button>
+    <button id="darkModeButton" onclick="toggleDarkMode()">Toggle Dark Mode</button>
+    <button id="colorButton" onclick="changeBackgroundColor()">Random Color</button>
+    <button id="confettiButton" onclick="confettiEffect()">Confetti</button>
+    <button id="synthesizeButton" onclick="synthesizeLFOEnvenlopeEqualizerNoiseVocoderFFTDataStream()">SynthesizeLFOEnvenlopeEqualizerNoiseVocoderFFTDataStream</button>
+    <textarea id="analysisTextarea"></textarea>
     <script>
         const dgei = document.getElementById.bind(document);
         const dqsel = document.querySelector.bind(document);
@@ -267,7 +217,6 @@ def create_static_files():
         let intervalId;
         let isDarkMode = false;
         let colorIndex = 0;
-        let sortOrder = 'desc';
         const colorSchemes = [
             { bg: '#f8f9fa', text: '#212529' },
             { bg: '#e9ecef', text: '#343a40' },
@@ -277,8 +226,7 @@ def create_static_files():
         ];
 
         async function fetchProcesses() {
-            dqsel('.loading').style.display = 'block';
-            const response = await fetch(`/processes?sort=${sortOrder}`);
+            const response = await fetch('/processes');
             const processes = await response.json();
             if (processes.error) {
                 alert(processes.error);
@@ -291,7 +239,7 @@ def create_static_files():
                 row.innerHTML = `
                     <td>${process.pid}</td>
                     <td>${process.name}</td>
-                    <td>${process.traffic_usage} bytes (${process.traffic_usage_mb.toFixed(2)} MB)</td>
+                    <td>${process.traffic_usage} bytes</td>
                     <td>
                         <button ${process.blocked ? 'disabled' : ''} onclick="blockProcess(${process.pid})">Block</button>
                         <button ${!process.blocked ? 'disabled' : ''} onclick="unblockProcess(${process.pid})">Unblock</button>
@@ -302,7 +250,6 @@ def create_static_files():
                 tableBody.appendChild(row);
             });
             updateChart(processes);
-            dqsel('.loading').style.display = 'none';
         }
 
         async function blockProcess(pid) {
@@ -379,13 +326,12 @@ def create_static_files():
                 const aValue = a.cells[columnIndex].textContent.trim();
                 const bValue = b.cells[columnIndex].textContent.trim();
                 if (isNumber) {
-                    return (sortOrder === 'asc' ? 1 : -1) * (parseInt(aValue, 10) - parseInt(bValue, 10));
+                    return parseInt(aValue, 10) - parseInt(bValue, 10);
                 } else {
-                    return (sortOrder === 'asc' ? 1 : -1) * aValue.localeCompare(bValue);
+                    return aValue.localeCompare(bValue);
                 }
             });
             rows.forEach(row => table.tBodies[0].appendChild(row));
-            sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
         }
 
         function analyzeCyberSpaceHaze() {
@@ -457,8 +403,8 @@ def create_static_files():
 ''')
 
 def elevate_permissions():
-    logger.info("Elevating permissions...")
-    subprocess.run(['sudo', 'python', __file__])
+    print("Elevating permissions...")
+    subprocess.call(['sudo', 'python', __file__])
 
 if __name__ == '__main__':
     check_root()
