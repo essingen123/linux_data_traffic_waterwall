@@ -8,7 +8,9 @@ import psutil
 import time
 from pynput import mouse, keyboard
 import random
-
+from collections import deque
+# author:kilian lindberg
+# license: mit + %303*
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,6 +25,24 @@ last_activity_time = time.time()
 idle_threshold = 5  # Consider user away if no activity for 5 seconds
 intervalTime = 2000  # Reduced default refresh interval for faster updates
 process_cache = {}  # Cache to store process information and reduce query overhead
+graph_refresh_enabled = True  # Flag to control graph refreshing
+historical_data = {}  # Store historical data for each process
+max_history_length = 60  # Keep 60 data points (e.g., 2 minutes of data with 2-second intervals)
+total_bandwidth_usage = 0  # Keep track of total bandwidth usage
+
+# Wow factor: Inspiring quotes
+quotes = [
+    "The only way to do great work is to love what you do. - Steve Jobs",
+    "Strive not to be a success, but rather to be of value. - Albert Einstein",
+    "The mind is everything. What you think you become. - Buddha",
+    "Believe you can and you're halfway there. - Theodore Roosevelt",
+    "The only person you are destined to become is the person you decide to be. - Ralph Waldo Emerson",
+    "Life is what happens when you're busy making other plans. - John Lennon",
+    "Your time is limited, so don't waste it living someone else's life. - Steve Jobs",
+    "The future belongs to those who believe in the beauty of their dreams. - Eleanor Roosevelt",
+    "The best and most beautiful things in the world cannot be seen or even touched - they must be felt with the heart. - Helen Keller",
+    "The greatest glory in living lies not in never falling, but in rising every time we fall. - Nelson Mandela"
+]
 
 # Check if the script is run as root
 def check_root():
@@ -43,15 +63,31 @@ def save_state(state):
     with open(STATE_FILE, 'w') as f:
         json.dump(state, f)
 
-# Get a list of all running processes (with caching)
+# Get a list of all running processes (with caching, historical data, and total bandwidth usage)
 def get_processes():
-    global process_cache
+    global process_cache, historical_data, total_bandwidth_usage
     current_time = time.time()
     if not process_cache or current_time - process_cache['timestamp'] > 1:  # Refresh cache every 1 second
         process_cache = {'timestamp': current_time, 'processes': []}
+        total_bandwidth_usage = 0  # Reset total bandwidth usage
         for p in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'num_threads', 'io_counters']):
             try:
-                process_cache['processes'].append(p.info)
+                process_info = p.info
+                pid = process_info['pid']
+                io_counters = process_info['io_counters']
+                traffic_usage = io_counters.read_bytes + io_counters.write_bytes if io_counters else 0
+                traffic_usage_mb = traffic_usage / (1024 * 1024)
+
+                # Update historical data
+                if pid not in historical_data:
+                    historical_data[pid] = deque(maxlen=max_history_length)
+                historical_data[pid].append(traffic_usage_mb)
+
+                process_cache['processes'].append(process_info)
+
+                # Update total bandwidth usage
+                total_bandwidth_usage += traffic_usage_mb
+
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 pass
     return process_cache['processes']
@@ -139,7 +175,8 @@ def list_processes():
                 'traffic_usage': traffic_usage,
                 'traffic_usage_mb': traffic_usage_mb,
                 'blocked': state.get(str(pid), {}).get('blocked', False),
-                'limit': state.get(str(pid), {}).get('limit', None)
+                'limit': state.get(str(pid), {}).get('limit', None),
+                'historical_data': list(historical_data.get(pid, []))
             })
 
         # Sort processes
@@ -228,9 +265,10 @@ def process_stream():
                     'traffic_usage': traffic_usage,
                     'traffic_usage_mb': traffic_usage_mb,
                     'blocked': state.get(str(pid), {}).get('blocked', False),
-                    'limit': state.get(str(pid), {}).get('limit', None)
+                    'limit': state.get(str(pid), {}).get('limit', None),
+                    'historical_data': list(historical_data.get(pid, []))
                 })
-            yield f"data: {json.dumps(process_info)}\n\n"
+            yield f"data: {json.dumps({'processes': process_info, 'total_bandwidth_usage': total_bandwidth_usage})}\n\n"
             time.sleep(intervalTime / 1000)
 
     return Response(generate(), mimetype='text/event-stream')
@@ -311,6 +349,7 @@ def index():
             margin-bottom: 15px;
             border-radius: 5px;
             animation: bounce 0.5s ease-in-out infinite alternate;
+            transition: transform 0.3s ease, opacity 0.3s ease;
         }
         @keyframes bounce {
             0% { transform: translateY(0); }
@@ -344,13 +383,69 @@ def index():
             height: 400px; /* Set a fixed height for the chart container */
             margin-bottom: 20px;
         }
+        .message-box {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: white;
+            padding: 20px;
+            border: 1px solid black;
+            z-index: 10001;
+            display: none; /* Initially hidden */
+        }
+        .message-box button {
+            margin-top: 10px;
+        }
+        #quote {
+            font-style: italic;
+            color: #666;
+            margin-bottom: 20px;
+        }
+        .notification-cue {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 10002;
+        }
+        .notification {
+            background-color: #f8f8f8;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-bottom: 5px;
+            border-radius: 5px;
+            animation: fadeInOut 5s ease-in-out;
+            opacity: 0; /* Initially hidden */
+        }
+        @keyframes fadeInOut {
+            0% { opacity: 0; transform: translateY(20px); }
+            10% { opacity: 1; transform: translateY(0); }
+            90% { opacity: 1; transform: translateY(0); }
+            100% { opacity: 0; transform: translateY(20px); }
+        }
+        #bandwidthUsageBar {
+            width: 0%;
+            height: 10px;
+            background-color: #9b4dca;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            transition: width 0.5s ease-in-out;
+        }
+        .button-group {
+            display: flex;
+            gap: 5px;
+        }
+        .button-group button {
+            flex: 1;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>WaterWall Control</h1>
+        <div id="quote"></div>
         <div class="button-row">
-            <button onclick="refreshData()">Refresh</button>
+            <button onclick="fetchProcesses()">Refresh Process List</button>
             <button onclick="toggleDarkMode()">Toggle Dark Mode</button>
             <button onclick="analyzeCyberSpaceHaze()">AI Analyze</button>
             <button onclick="intruderWaterPlay()">Intruder Water Play</button>
@@ -358,8 +453,10 @@ def index():
             <button onclick="synthesizeAudio()">Synthesize Audio</button>
             <button onclick="changeBackgroundColor()">Random Color</button>
             <button onclick="toggleChart()">Show/Hide Graph</button>
+            <button onclick="toggleGraphRefresh()">Toggle Graph Refresh</button>
         </div>
         <div id="analysisTextarea" class="analysis-textarea"></div> 
+        <div id="feedbackArea"></div>
         <div class="row">
             <div class="column">
                 <label for="intervalInput">Refresh Interval (ms):</label>
@@ -378,6 +475,10 @@ def index():
                 </select>
             </div>
         </div>
+        <div id="bandwidthUsage">
+            <label for="bandwidthUsageBar">Bandwidth Usage:</label>
+            <div id="bandwidthUsageBar"></div>
+        </div>
         <div id="trafficChartContainer">
             <canvas id="trafficChart"></canvas>
         </div>
@@ -386,6 +487,11 @@ def index():
         <div class="loading">
             <div class="spinner"></div>
         </div>
+        <div id="messageBox" class="message-box">
+            <div id="messageContent"></div>
+            <button onclick="closeMessageBox()">Close</button>
+        </div>
+        <div class="notification-cue"></div>
     </div>
     <script>
         const $ = document.querySelector.bind(document);
@@ -396,9 +502,22 @@ def index():
         let isDarkMode = false;
         let chart;
         let sortCriteria = 'traffic_desc';
+        let graphRefreshEnabled = true; // Track graph refresh status
+        const quotes = [ // Added quotes array in JavaScript
+            "The only way to do great work is to love what you do. - Steve Jobs",
+            "Strive not to be a success, but rather to be of value. - Albert Einstein",
+            "The mind is everything. What you think you become. - Buddha",
+            "Believe you can and you're halfway there. - Theodore Roosevelt",
+            "The only person you are destined to become is the person you decide to be. - Ralph Waldo Emerson",
+            "Life is what happens when you're busy making other plans. - John Lennon",
+            "Your time is limited, so don't waste it living someone else's life. - Steve Jobs",
+            "The future belongs to those who believe in the beauty of their dreams. - Eleanor Roosevelt",
+            "The best and most beautiful things in the world cannot be seen or even touched - they must be felt with the heart. - Helen Keller",
+            "The greatest glory in living lies not in never falling, but in rising every time we fall. - Nelson Mandela"
+        ];
 
         async function fetchProcesses() {
-            $('.loading').style.display = 'block';
+            $('.loading').style.display = 'block'; // Show loading indicator
             try {
                 const response = await fetch(`/processes?sort=${sortCriteria}`);
                 if (!response.ok) {
@@ -406,85 +525,152 @@ def index():
                 }
                 const processes = await response.json();
                 updateProcessList(processes);
-                updateChart(processes);
+                if (graphRefreshEnabled) {
+                    updateChart(); // Update chart with latest data
+                }
                 $('#errorMessage').style.display = 'none';
             } catch (error) {
                 console.error('Error fetching processes:', error);
                 $('#errorMessage').textContent = `Error: ${error.message}. Please check your connection and try again.`;
                 $('#errorMessage').style.display = 'block';
             } finally {
-                $('.loading').style.display = 'none';
+                $('.loading').style.display = 'none'; // Hide loading indicator
             }
         }
 
         function updateProcessList(processes) {
             const processList = $('#processList');
-            processList.innerHTML = '';
+            processList.innerHTML = ''; // Clear previous list
+
+            // Sort processes based on the selected criteria
+            processes.sort((a, b) => {
+                if (sortCriteria === 'traffic_desc') {
+                    return b.traffic_usage_mb - a.traffic_usage_mb;
+                } else if (sortCriteria === 'traffic_asc') {
+                    return a.traffic_usage_mb - b.traffic_usage_mb;
+                } else if (sortCriteria === 'name_asc') {
+                    return a.name.localeCompare(b.name);
+                } else if (sortCriteria === 'name_desc') {
+                    return b.name.localeCompare(a.name);
+                } else if (sortCriteria === 'pid_asc') {
+                    return a.pid - b.pid;
+                } else if (sortCriteria === 'pid_desc') {
+                    return b.pid - a.pid;
+                }
+            });
+
             processes.forEach(process => {
                 const card = document.createElement('div');
                 card.className = 'process-card';
+                card.id = `process-${process.pid}`;
                 card.innerHTML = `
                     <h3>${process.name} (PID: ${process.pid})</h3>
                     <p>Traffic Usage: ${(process.traffic_usage_mb).toFixed(2)} MB</p>
                     <p>Status: ${process.blocked ? 'Blocked' : 'Active'}</p>
-                    <button onclick="toggleBlock(${process.pid}, ${process.blocked})">${process.blocked ? 'Unblock' : 'Block'}</button>
-                    <input type="number" id="limit${process.pid}" min="0" max="100" placeholder="Limit %" value="${process.limit || ''}">
-                    <button onclick="setLimit(${process.pid})">Set Limit</button>
+                    <div class="button-group">
+                        <button onclick="toggleBlock(${process.pid}, ${process.blocked})">${process.blocked ? 'Unblock' : 'Block'}</button>
+                        <button onclick="setLimit(${process.pid}, 75)">Limit 75%</button>
+                        <button onclick="setLimit(${process.pid}, 50)">Limit 50%</button>
+                        <button onclick="setLimit(${process.pid}, 25)">Limit 25%</button>
+                    </div>
                 `;
                 processList.appendChild(card);
             });
         }
 
-        function updateChart(processes) {
-            const ctx = $('#trafficChart').getContext('2d');
-            const labels = processes.map(p => p.name);
-            const data = processes.map(p => p.traffic_usage_mb);
+        function toggleChart() {
+            const chartContainer = $('#trafficChartContainer');
+            if (chartContainer.style.display === 'none') {
+                chartContainer.style.display = 'block';
+                updateChart(); // Refresh chart when shown
+            } else {
+                chartContainer.style.display = 'none';
+            }
+        }
 
-            if (chart) {
-                chart.destroy();
+        function toggleGraphRefresh() {
+            graphRefreshEnabled = !graphRefreshEnabled;
+            const feedbackArea = $('#feedbackArea');
+            feedbackArea.textContent = graphRefreshEnabled ? 'Graph refreshing enabled.' : 'Graph refreshing disabled.';
+        }
+
+        function updateChart() {
+            if (!graphRefreshEnabled) {
+                return; // Don't update the chart if refreshing is disabled
             }
 
-            chart = new Chart(ctx, {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: 'Traffic Usage (MB)',
-                        data: data,
-                        backgroundColor: 'rgba(155, 77, 202, 0.6)',
-                        borderColor: 'rgba(155, 77, 202, 1)',
-                        borderWidth: 1
-                    }]
-                },
-                options: {
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            title: {
-                                display: true,
-                                text: 'Traffic Usage (MB)'
-                            },
-                            // Set a suggested maximum value for the y-axis
-                            suggestedMax: 100 // Adjust this value as needed
-                        }
-                    },
-                    plugins: {
-                        legend: {
-                            display: false
+            const ctx = $('#trafficChart').getContext('2d');
+            
+            // Fetch latest process data
+            fetch('/processes')
+                .then(response => response.json())
+                .then(processes => {
+                    const labels = generateTimeLabels();
+                    const datasets = processes.map(p => ({
+                        label: p.name,
+                        data: p.historical_data, // Use historical data for the line chart
+                        borderColor: `rgba(${random.randint(0, 255)}, ${random.randint(0, 255)}, ${random.randint(0, 255)}, 1)`,
+                        borderWidth: 1,
+                        fill: false
+                    }));
+
+                    if (chart) {
+                        chart.destroy();
+                    }
+
+                    chart = new Chart(ctx, {
+                        type: 'line', // Changed chart type to 'line' for historical data
+                        data: {
+                            labels: labels,
+                            datasets: datasets
                         },
-                        title: {
-                            display: true,
-                            text: 'Process Traffic Usage'
+                        options: {
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    title: {
+                                        display: true,
+                                        text: 'Traffic Usage (MB)'
+                                    }
+                                },
+                                x: {
+                                    title: {
+                                        display: true,
+                                        text: 'Time'
+                                    }
+                                }
+                            },
+                            plugins: {
+                                legend: {
+                                    display: true
+                                },
+                                title: {
+                                    display: true,
+                                    text: 'Historical Process Traffic Usage'
+                                }
+                            },
+                            responsive: true,
+                            maintainAspectRatio: false
                         }
-                    },
-                    responsive: true,
-                    maintainAspectRatio: false
-                }
-            });
+                    });
+                })
+                .catch(error => {
+                    console.error('Error fetching process data for chart:', error);
+                });
+        }
+
+        function generateTimeLabels() {
+            const now = new Date();
+            const labels = [];
+            for (let i = 0; i < max_history_length; i++) {
+                const time = new Date(now.getTime() - (i * intervalTime));
+                labels.unshift(`${time.getHours()}:${time.getMinutes()}:${time.getSeconds()}`);
+            }
+            return labels;
         }
 
         async function toggleBlock(pid, currentlyBlocked) {
-            $('.loading').style.display = 'block';
+            $('.loading').style.display = 'block'; // Show loading indicator
             try {
                 const action = currentlyBlocked ? 'unblock' : 'block';
                 const response = await fetch(`/${action}`, {
@@ -497,37 +683,38 @@ def index():
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
-                await fetchProcesses(); // No need to manually refresh with SSE
+                showMessage(`${currentlyBlocked ? 'Unblocked' : 'Blocked'} process with PID ${pid}`);
+                await fetchProcesses(); // Refresh process list
             } catch (error) {
                 console.error(`Error ${currentlyBlocked ? 'unblocking' : 'blocking'} process:`, error);
                 $('#errorMessage').textContent = `Error: ${error.message}. Please try again.`;
                 $('#errorMessage').style.display = 'block';
             } finally {
-                $('.loading').style.display = 'none';
+                $('.loading').style.display = 'none'; // Hide loading indicator
             }
         }
 
-        async function setLimit(pid) {
-            const limit = $(`#limit${pid}`).value;
-            $('.loading').style.display = 'block';
+        async function setLimit(pid, percentage) {
+            $('.loading').style.display = 'block'; // Show loading indicator
             try {
                 const response = await fetch('/limit', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ pid, percentage: limit })
+                    body: JSON.stringify({ pid, percentage: percentage })
                 });
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
-                await fetchProcesses(); // No need to manually refresh with SSE
+                showMessage(`Set traffic limit for process with PID ${pid} to ${percentage}%`);
+                await fetchProcesses(); // Refresh process list
             } catch (error) {
                 console.error('Error setting limit:', error);
                 $('#errorMessage').textContent = `Error: ${error.message}. Please try again.`;
                 $('#errorMessage').style.display = 'block';
             } finally {
-                $('.loading').style.display = 'none';
+                $('.loading').style.display = 'none'; // Hide loading indicator
             }
         }
 
@@ -535,6 +722,7 @@ def index():
             clearInterval(intervalId);
             intervalTime = parseInt($('#intervalInput').value, 10);
             intervalId = setInterval(fetchProcesses, intervalTime); // No need for setInterval with SSE
+            showMessage(`Refresh interval set to ${intervalTime}ms`);
         }
 
         function changeSort() {
@@ -550,6 +738,7 @@ def index():
                 button.style.backgroundColor = isDarkMode ? '#555' : '';
                 button.style.color = isDarkMode ? '#fff' : '';
             });
+            showMessage(`Dark mode ${isDarkMode ? 'enabled' : 'disabled'}`);
         }
 
         function analyzeCyberSpaceHaze() {
@@ -557,6 +746,7 @@ def index():
             textarea.style.display = 'block';
             // Use HTML line breaks for formatting
             textarea.innerHTML = "Analyzing Cyber Space Haze...<br>1. Quantum Flux: Stable<br>2. Nebula Density: 78%<br>3. Void Resonance: Harmonic<br>4. Starlight Interference: Minimal<br>5. Plasma Conductivity: Optimal<br>Conclusion: The Cyber Space Haze is currently in a favorable state for data transmission.";
+            showMessage('Cyber Space Haze analysis complete!');
         }
 
         function intruderWaterPlay() {
@@ -570,6 +760,7 @@ def index():
         function changeBackgroundColor() {
             const randomColor = '#' + Math.floor(Math.random() * 16777215).toString(16);
             document.body.style.backgroundColor = randomColor;
+            showMessage(`Background color changed to ${randomColor}`);
         }
 
         function confettiEffect() {
@@ -598,6 +789,7 @@ def index():
 
                 animation.onfinish = () => confetti.remove();
             }
+            showMessage('Confetti time!');
         }
 
         function synthesizeAudio() {
@@ -617,38 +809,22 @@ def index():
             gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 1);
             oscillator.stop(audioContext.currentTime + 1);
 
-            alert("Synthesizing LFO Envelope Equalizer Noise Vocoder FFT Data Stream...");
+            showMessage("Synthesizing LFO Envelope Equalizer Noise Vocoder FFT Data Stream...");
         }
 
         function showMessage(message) {
-            // Create a simple message box
-            const messageBox = document.createElement('div');
-            messageBox.style.position = 'fixed';
-            messageBox.style.top = '50%';
-            messageBox.style.left = '50%';
-            messageBox.style.transform = 'translate(-50%, -50%)';
-            messageBox.style.backgroundColor = 'white';
-            messageBox.style.padding = '20px';
-            messageBox.style.border = '1px solid black';
-            messageBox.style.zIndex = '10001'; // Ensure it's above the loading spinner
-            messageBox.textContent = message;
-            document.body.appendChild(messageBox);
-
-            // Add a close button
-            const closeButton = document.createElement('button');
-            closeButton.textContent = 'Close';
-            closeButton.style.marginTop = '10px';
-            closeButton.onclick = () => messageBox.remove();
-            messageBox.appendChild(closeButton);
+            $('#messageContent').textContent = message;
+            $('#messageBox').style.display = 'block';
         }
 
-        function toggleChart() {
-            const chartContainer = $('#trafficChartContainer');
-            if (chartContainer.style.display === 'none') {
-                chartContainer.style.display = 'block';
-            } else {
-                chartContainer.style.display = 'none';
-            }
+        function closeMessageBox() {
+            $('#messageBox').style.display = 'none';
+        }
+
+        function displayRandomQuote() {
+            const quoteElement = $('#quote');
+            const randomIndex = Math.floor(Math.random() * quotes.length);
+            quoteElement.textContent = quotes[randomIndex];
         }
 
         // Initialize EventSource for real-time updates
@@ -657,11 +833,14 @@ def index():
         eventSource.onmessage = (event) => {
             const processes = JSON.parse(event.data);
             updateProcessList(processes);
-            updateChart(processes);
+            if (graphRefreshEnabled) {
+                updateChart(processes);
+            }
         };
 
         // Initial data fetch
         fetchProcesses();
+        displayRandomQuote(); // Display a random quote on page load
     </script>
 </body>
 </html>
