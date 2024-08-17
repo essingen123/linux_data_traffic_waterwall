@@ -11,7 +11,7 @@ set303i=y
 set303b=linux_data_traffic_waterwall
 
 # public git (private for private, public for public)
-set303c=private
+set303c=public
 
 # auto generate HTML page, y for yes and n for no
 set303d=y
