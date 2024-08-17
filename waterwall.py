@@ -2,27 +2,27 @@ import os
 import subprocess
 import json
 import webbrowser
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, Response
 import logging
+import psutil
+import time
+from pynput import mouse, keyboard
+import random
 
-# Author: Kilian Lindberg
-# License: MIT+%303*
-
-try:
-    import psutil
-except ImportError:
-    import sys
-    sys.path.append('/usr/lib/python3/dist-packages')
-    import psutil
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
 # File to store the state
 STATE_FILE = 'waterwall_state.json'
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Global variables
+last_activity_time = time.time()
+idle_threshold = 5  # Consider user away if no activity for 5 seconds
+intervalTime = 2000  # Reduced default refresh interval for faster updates
+process_cache = {}  # Cache to store process information and reduce query overhead
 
 # Check if the script is run as root
 def check_root():
@@ -43,9 +43,18 @@ def save_state(state):
     with open(STATE_FILE, 'w') as f:
         json.dump(state, f)
 
-# Get a list of all running processes
+# Get a list of all running processes (with caching)
 def get_processes():
-    return [p.info for p in psutil.process_iter(['pid', 'name'])]
+    global process_cache
+    current_time = time.time()
+    if not process_cache or current_time - process_cache['timestamp'] > 1:  # Refresh cache every 1 second
+        process_cache = {'timestamp': current_time, 'processes': []}
+        for p in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'num_threads', 'io_counters']):
+            try:
+                process_cache['processes'].append(p.info)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+    return process_cache['processes']
 
 # Block traffic for a specific process
 def block_process(pid):
@@ -72,6 +81,40 @@ def get_traffic_usage(pid):
     except psutil.AccessDenied:
         raise PermissionError("Permission denied. Please run with sudo.")
 
+# Function to detect user activity
+def on_move(x, y):
+    global last_activity_time
+    last_activity_time = time.time()
+
+def on_click(x, y, button, pressed):
+    global last_activity_time
+    last_activity_time = time.time()
+
+def on_press(key):
+    global last_activity_time
+    last_activity_time = time.time()
+
+# Start mouse and keyboard listeners
+mouse_listener = mouse.Listener(on_move=on_move, on_click=on_click)
+keyboard_listener = keyboard.Listener(on_press=on_press)
+mouse_listener.start()
+keyboard_listener.start()
+
+# Function to check if the user is away
+def is_user_away():
+    return time.time() - last_activity_time > idle_threshold
+
+# Function to throttle system processes
+def throttle_processes():
+    for proc in psutil.process_iter(attrs=['pid', 'name', 'cpu_percent', 'memory_percent']):
+        try:
+            # Throttle CPU usage to a minimal level
+            p = psutil.Process(proc.info['pid'])
+            p.nice(psutil.IDLE_PRIORITY_CLASS)
+            logger.info(f"Throttled process: {proc.info['name']} (PID: {proc.info['pid']})")
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+
 @app.route('/processes', methods=['GET'])
 def list_processes():
     try:
@@ -81,13 +124,42 @@ def list_processes():
         for p in processes:
             pid = p['pid']
             name = p['name']
-            traffic_usage = get_traffic_usage(pid)
+            cpu_percent = p['cpu_percent']
+            memory_percent = p['memory_percent']
+            num_threads = p['num_threads']
+            io_counters = p['io_counters']
+            traffic_usage = io_counters.read_bytes + io_counters.write_bytes if io_counters else 0
             traffic_usage_mb = traffic_usage / (1024 * 1024)
-            process_info.append({'pid': pid, 'name': name, 'traffic_usage': traffic_usage, 'traffic_usage_mb': traffic_usage_mb, 'blocked': state.get(pid, {}).get('blocked', False), 'limit': state.get(pid, {}).get('limit', None)})
+            process_info.append({
+                'pid': pid,
+                'name': name,
+                'cpu_percent': cpu_percent,
+                'memory_percent': memory_percent,
+                'num_threads': num_threads,
+                'traffic_usage': traffic_usage,
+                'traffic_usage_mb': traffic_usage_mb,
+                'blocked': state.get(str(pid), {}).get('blocked', False),
+                'limit': state.get(str(pid), {}).get('limit', None)
+            })
 
-        # Sort processes by traffic usage
-        sort_order = request.args.get('sort', 'desc')
-        process_info.sort(key=lambda x: x['traffic_usage'], reverse=(sort_order == 'desc'))
+        # Sort processes
+        sort_column = request.args.get('sort', 'traffic_usage')
+        sort_order = request.args.get('order', 'desc')
+
+        # Map sort_column to the correct field
+        sort_mapping = {
+            'traffic_desc': 'traffic_usage',
+            'traffic_asc': 'traffic_usage',
+            'name_asc': 'name',
+            'name_desc': 'name',
+            'pid_asc': 'pid',
+            'pid_desc': 'pid'
+        }
+
+        # Use the mapped field for sorting
+        sort_key = sort_mapping.get(sort_column, 'traffic_usage')  # Default to traffic_usage if not found
+
+        process_info.sort(key=lambda x: x[sort_key], reverse=(sort_order == 'desc'))
 
         return jsonify(process_info)
     except PermissionError as e:
@@ -99,7 +171,7 @@ def block():
     pid = request.json.get('pid')
     block_process(pid)
     state = load_state()
-    state[pid] = {'blocked': True, 'limit': None}
+    state[str(pid)] = {'blocked': True, 'limit': None}
     save_state(state)
     return jsonify({'status': 'success'})
 
@@ -108,7 +180,7 @@ def unblock():
     pid = request.json.get('pid')
     unblock_process(pid)
     state = load_state()
-    state[pid] = {'blocked': False, 'limit': None}
+    state[str(pid)] = {'blocked': False, 'limit': None}
     save_state(state)
     return jsonify({'status': 'success'})
 
@@ -118,80 +190,94 @@ def limit():
     percentage = request.json.get('percentage')
     set_traffic_limit(pid, percentage)
     state = load_state()
-    state[pid] = {'blocked': False, 'limit': percentage}
+    state[str(pid)] = {'blocked': False, 'limit': percentage}
     save_state(state)
     return jsonify({'status': 'success'})
 
+@app.route('/user_status', methods=['GET'])
+def user_status():
+    return jsonify({'away': is_user_away()})
+
+@app.route('/throttle', methods=['POST'])
+def throttle():
+    throttle_processes()
+    return jsonify({'status': 'success'})
+
+@app.route('/process_stream')
+def process_stream():
+    def generate():
+        while True:
+            processes = get_processes()
+            process_info = []
+            state = load_state()
+            for p in processes:
+                pid = p['pid']
+                name = p['name']
+                cpu_percent = p['cpu_percent']
+                memory_percent = p['memory_percent']
+                num_threads = p['num_threads']
+                io_counters = p['io_counters']
+                traffic_usage = io_counters.read_bytes + io_counters.write_bytes if io_counters else 0
+                traffic_usage_mb = traffic_usage / (1024 * 1024)
+                process_info.append({
+                    'pid': pid,
+                    'name': name,
+                    'cpu_percent': cpu_percent,
+                    'memory_percent': memory_percent,
+                    'num_threads': num_threads,
+                    'traffic_usage': traffic_usage,
+                    'traffic_usage_mb': traffic_usage_mb,
+                    'blocked': state.get(str(pid), {}).get('blocked', False),
+                    'limit': state.get(str(pid), {}).get('limit', None)
+                })
+            yield f"data: {json.dumps(process_info)}\n\n"
+            time.sleep(intervalTime / 1000)
+
+    return Response(generate(), mimetype='text/event-stream')
+
 @app.route('/')
 def index():
-    return send_from_directory('static', 'index.html')
-
-@app.route('/static/<path:path>')
-def static_files(path):
-    return send_from_directory('static', path)
-
-def create_static_files():
-    os.makedirs('static', exist_ok=True)
-
-    # Create index.html
-    with open('static/index.html', 'w') as f:
-        f.write('''<!DOCTYPE html>
+    return """
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WaterWall Control</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.9.4/css/bulma.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/spin.js/2.3.2/spin.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body {
-            font-family: Arial, sans-serif;
+            padding: 20px;
             transition: background-color 0.5s, color 0.5s;
+        }
+        .container {
+            max-width: 120rem;
         }
         table {
             width: 100%;
-            border-collapse: collapse;
-        }
-        table, th, td {
-            border: 1px solid black;
-        }
-        th, td {
-            padding: 8px;
-            text-align: left;
         }
         canvas {
             max-width: 100%;
             height: auto;
+            margin-bottom: 20px;
         }
         #intervalInput {
+            width: 100px;
             margin-right: 10px;
         }
-        #analyzeButton, #intruderButton, #darkModeButton, #colorButton, #confettiButton, #synthesizeButton, #refreshButton {
-            margin-top: 20px;
+        .button-row {
+            margin-bottom: 20px;
+        }
+        .button-row button {
             margin-right: 10px;
+            margin-bottom: 10px;
         }
         #analysisTextarea {
             display: none;
             width: 100%;
             height: 200px;
-        }
-        @keyframes shake {
-            0% { transform: translate(1px, 1px) rotate(0deg); }
-            10% { transform: translate(-1px, -2px) rotate(-1deg); }
-            20% { transform: translate(-3px, 0px) rotate(1deg); }
-            30% { transform: translate(3px, 2px) rotate(0deg); }
-            40% { transform: translate(1px, -1px) rotate(1deg); }
-            50% { transform: translate(-1px, 2px) rotate(-1deg); }
-            60% { transform: translate(-3px, 1px) rotate(0deg); }
-            70% { transform: translate(3px, 1px) rotate(-1deg); }
-            80% { transform: translate(-1px, -1px) rotate(1deg); }
-            90% { transform: translate(1px, 2px) rotate(0deg); }
-            100% { transform: translate(1px, -2px) rotate(-1deg); }
-        }
-        @keyframes gradient {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
+            margin-top: 20px;
         }
         .loading {
             display: none;
@@ -211,201 +297,274 @@ def create_static_files():
             width: 50px;
             height: 50px;
             border: 5px solid #f3f3f3;
-            border-top: 5px solid #3498db;
+            border-top: 5px solid #9b4dca;
             border-radius: 50%;
             animation: spin 1s linear infinite;
         }
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+            0% { transform: translate(-50%, -50%) rotate(0deg); }
+            100% { transform: translate(-50%, -50%) rotate(360deg); }
+        }
+        .process-card {
+            border: 1px solid #e1e1e1;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 5px;
+            animation: bounce 0.5s ease-in-out infinite alternate;
+        }
+        @keyframes bounce {
+            0% { transform: translateY(0); }
+            100% { transform: translateY(-5px); }
+        }
+        .process-card h3 {
+            margin-bottom: 10px;
+        }
+        .error-message {
+            color: #721c24;
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            padding: 10px;
+            margin-bottom: 15px;
+            border-radius: 5px;
+            display: none;
+        }
+        .analysis-textarea {
+            display: none;
+            width: 100%;
+            height: 200px;
+            margin-top: 20px;
+            resize: vertical; /* Allow vertical resizing of the textarea */
+            border: 1px solid #ccc; /* Add a border for better visibility */
+            padding: 10px; /* Add some padding for better readability */
+            font-family: monospace; /* Use a monospace font for the analysis output */
+        }
+        #trafficChartContainer {
+            display: none; /* Initially hide the chart container */
+            max-width: 100%;
+            height: 400px; /* Set a fixed height for the chart container */
+            margin-bottom: 20px;
         }
     </style>
 </head>
 <body>
-    <section class="section">
-        <div class="container">
-            <h1 class="title">WaterWall Control</h1>
-            <div class="buttons">
-                <button class="button is-primary" onclick="refreshData()">Refresh</button>
-                <button class="button is-dark" onclick="toggleDarkMode()">Toggle Dark Mode</button>
-                <button class="button is-info" onclick="analyzeCyberSpaceHaze()">AI Analyze Cyber Space Haze</button>
-                <button class="button is-warning" onclick="intruderWaterPlay()">IntruderWaterPlay</button>
-                <button class="button is-danger" onclick="confettiEffect()">Confetti</button>
-                <button class="button is-success" onclick="synthesizeLFOEnvenlopeEqualizerNoiseVocoderFFTDataStream()">Synthesize LFO Envelope Equalizer Noise Vocoder FFT Data Stream</button>
-                <button class="button is-link" onclick="changeBackgroundColor()">Random Color</button>
-            </div>
-            <div>
+    <div class="container">
+        <h1>WaterWall Control</h1>
+        <div class="button-row">
+            <button onclick="refreshData()">Refresh</button>
+            <button onclick="toggleDarkMode()">Toggle Dark Mode</button>
+            <button onclick="analyzeCyberSpaceHaze()">AI Analyze</button>
+            <button onclick="intruderWaterPlay()">Intruder Water Play</button>
+            <button onclick="confettiEffect()">Confetti</button>
+            <button onclick="synthesizeAudio()">Synthesize Audio</button>
+            <button onclick="changeBackgroundColor()">Random Color</button>
+            <button onclick="toggleChart()">Show/Hide Graph</button>
+        </div>
+        <div id="analysisTextarea" class="analysis-textarea"></div> 
+        <div class="row">
+            <div class="column">
                 <label for="intervalInput">Refresh Interval (ms):</label>
-                <input type="number" id="intervalInput" value="5000">
+                <input type="number" id="intervalInput" value="2000">
                 <button onclick="setIntervalTime()">Set Interval</button>
             </div>
-            <canvas id="trafficChart"></canvas>
-            <table id="processTable">
-                <thead>
-                    <tr>
-                        <th onclick="sortTable(0)">PID [A]/[D]</th>
-                        <th onclick="sortTable(1)">Name [A]/[D]</th>
-                        <th onclick="sortTable(2)">Traffic Usage (bytes) [A]/[D]</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                </tbody>
-            </table>
-            <textarea id="analysisTextarea"></textarea>
-            <div class="loading">
-                <div class="spinner"></div>
+            <div class="column">
+                <label for="sortSelect">Sort by:</label>
+                <select id="sortSelect" onchange="changeSort()">
+                    <option value="traffic_desc">Traffic (High to Low)</option>
+                    <option value="traffic_asc">Traffic (Low to High)</option>
+                    <option value="name_asc">Name (A to Z)</option>
+                    <option value="name_desc">Name (Z to A)</option>
+                    <option value="pid_asc">PID (Low to High)</option>
+                    <option value="pid_desc">PID (High to Low)</option>
+                </select>
             </div>
         </div>
-    </section>
+        <div id="trafficChartContainer">
+            <canvas id="trafficChart"></canvas>
+        </div>
+        <div id="errorMessage" class="error-message"></div>
+        <div id="processList"></div>
+        <div class="loading">
+            <div class="spinner"></div>
+        </div>
+    </div>
     <script>
-        const dgei = document.getElementById.bind(document);
-        const dqsel = document.querySelector.bind(document);
-        const dqselAll = document.querySelectorAll.bind(document);
+        const $ = document.querySelector.bind(document);
+        const $$ = document.querySelectorAll.bind(document);
 
-        let intervalTime = 5000;
+        let intervalTime = 2000;
         let intervalId;
         let isDarkMode = false;
-        let colorIndex = 0;
-        let sortOrder = 'desc';
-        const colorSchemes = [
-            { bg: '#f8f9fa', text: '#212529' },
-            { bg: '#e9ecef', text: '#343a40' },
-            { bg: '#dee2e6', text: '#495057' },
-            { bg: '#ced4da', text: '#6c757d' },
-            { bg: '#adb5bd', text: '#868e96' }
-        ];
+        let chart;
+        let sortCriteria = 'traffic_desc';
 
         async function fetchProcesses() {
-            dqsel('.loading').style.display = 'block';
-            const response = await fetch(`/processes?sort=${sortOrder}`);
-            const processes = await response.json();
-            if (processes.error) {
-                alert(processes.error);
-                return;
+            $('.loading').style.display = 'block';
+            try {
+                const response = await fetch(`/processes?sort=${sortCriteria}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const processes = await response.json();
+                updateProcessList(processes);
+                updateChart(processes);
+                $('#errorMessage').style.display = 'none';
+            } catch (error) {
+                console.error('Error fetching processes:', error);
+                $('#errorMessage').textContent = `Error: ${error.message}. Please check your connection and try again.`;
+                $('#errorMessage').style.display = 'block';
+            } finally {
+                $('.loading').style.display = 'none';
             }
-            const tableBody = dqsel('#processTable tbody');
-            tableBody.innerHTML = '';
+        }
+
+        function updateProcessList(processes) {
+            const processList = $('#processList');
+            processList.innerHTML = '';
             processes.forEach(process => {
-                const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td>${process.pid}</td>
-                    <td>${process.name}</td>
-                    <td>${process.traffic_usage} bytes (${process.traffic_usage_mb.toFixed(2)} MB)</td>
-                    <td>
-                        <button ${process.blocked ? 'disabled' : ''} onclick="blockProcess(${process.pid})">Block</button>
-                        <button ${!process.blocked ? 'disabled' : ''} onclick="unblockProcess(${process.pid})">Unblock</button>
-                        <input type="number" id="limit${process.pid}" min="0" max="100" placeholder="Limit %" value="${process.limit || ''}">
-                        <button onclick="setLimit(${process.pid})">Set Limit</button>
-                    </td>
+                const card = document.createElement('div');
+                card.className = 'process-card';
+                card.innerHTML = `
+                    <h3>${process.name} (PID: ${process.pid})</h3>
+                    <p>Traffic Usage: ${(process.traffic_usage_mb).toFixed(2)} MB</p>
+                    <p>Status: ${process.blocked ? 'Blocked' : 'Active'}</p>
+                    <button onclick="toggleBlock(${process.pid}, ${process.blocked})">${process.blocked ? 'Unblock' : 'Block'}</button>
+                    <input type="number" id="limit${process.pid}" min="0" max="100" placeholder="Limit %" value="${process.limit || ''}">
+                    <button onclick="setLimit(${process.pid})">Set Limit</button>
                 `;
-                tableBody.appendChild(row);
+                processList.appendChild(card);
             });
-            updateChart(processes);
-            dqsel('.loading').style.display = 'none';
-        }
-
-        async function blockProcess(pid) {
-            await fetch('/block', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ pid })
-            });
-            fetchProcesses();
-        }
-
-        async function unblockProcess(pid) {
-            await fetch('/unblock', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ pid })
-            });
-            fetchProcesses();
-        }
-
-        async function setLimit(pid) {
-            const limit = dgei(`limit${pid}`).value;
-            await fetch('/limit', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ pid, percentage: limit })
-            });
-            fetchProcesses();
         }
 
         function updateChart(processes) {
+            const ctx = $('#trafficChart').getContext('2d');
             const labels = processes.map(p => p.name);
-            const data = processes.map(p => p.traffic_usage);
-            const ctx = dgei('trafficChart').getContext('2d');
-            new Chart(ctx, {
+            const data = processes.map(p => p.traffic_usage_mb);
+
+            if (chart) {
+                chart.destroy();
+            }
+
+            chart = new Chart(ctx, {
                 type: 'bar',
                 data: {
                     labels: labels,
                     datasets: [{
-                        label: 'Traffic Usage (bytes)',
+                        label: 'Traffic Usage (MB)',
                         data: data,
-                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
-                        borderColor: 'rgba(75, 192, 192, 1)',
+                        backgroundColor: 'rgba(155, 77, 202, 0.6)',
+                        borderColor: 'rgba(155, 77, 202, 1)',
                         borderWidth: 1
                     }]
                 },
                 options: {
                     scales: {
                         y: {
-                            beginAtZero: true
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Traffic Usage (MB)'
+                            },
+                            // Set a suggested maximum value for the y-axis
+                            suggestedMax: 100 // Adjust this value as needed
                         }
-                    }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        title: {
+                            display: true,
+                            text: 'Process Traffic Usage'
+                        }
+                    },
+                    responsive: true,
+                    maintainAspectRatio: false
                 }
             });
+        }
+
+        async function toggleBlock(pid, currentlyBlocked) {
+            $('.loading').style.display = 'block';
+            try {
+                const action = currentlyBlocked ? 'unblock' : 'block';
+                const response = await fetch(`/${action}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ pid })
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                await fetchProcesses(); // No need to manually refresh with SSE
+            } catch (error) {
+                console.error(`Error ${currentlyBlocked ? 'unblocking' : 'blocking'} process:`, error);
+                $('#errorMessage').textContent = `Error: ${error.message}. Please try again.`;
+                $('#errorMessage').style.display = 'block';
+            } finally {
+                $('.loading').style.display = 'none';
+            }
+        }
+
+        async function setLimit(pid) {
+            const limit = $(`#limit${pid}`).value;
+            $('.loading').style.display = 'block';
+            try {
+                const response = await fetch('/limit', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ pid, percentage: limit })
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                await fetchProcesses(); // No need to manually refresh with SSE
+            } catch (error) {
+                console.error('Error setting limit:', error);
+                $('#errorMessage').textContent = `Error: ${error.message}. Please try again.`;
+                $('#errorMessage').style.display = 'block';
+            } finally {
+                $('.loading').style.display = 'none';
+            }
         }
 
         function setIntervalTime() {
             clearInterval(intervalId);
-            intervalTime = parseInt(dgei('intervalInput').value, 10);
-            intervalId = setInterval(fetchProcesses, intervalTime);
+            intervalTime = parseInt($('#intervalInput').value, 10);
+            intervalId = setInterval(fetchProcesses, intervalTime); // No need for setInterval with SSE
         }
 
-        function sortTable(columnIndex) {
-            const table = dgei('processTable');
-            const rows = Array.from(table.rows).slice(1);
-            const isNumber = columnIndex === 0 || columnIndex === 2;
-            rows.sort((a, b) => {
-                const aValue = a.cells[columnIndex].textContent.trim();
-                const bValue = b.cells[columnIndex].textContent.trim();
-                if (isNumber) {
-                    return (sortOrder === 'asc' ? 1 : -1) * (parseInt(aValue, 10) - parseInt(bValue, 10));
-                } else {
-                    return (sortOrder === 'asc' ? 1 : -1) * aValue.localeCompare(bValue);
-                }
-            });
-            rows.forEach(row => table.tBodies[0].appendChild(row));
-            sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
-        }
-
-        function analyzeCyberSpaceHaze() {
-            const textarea = dgei('analysisTextarea');
-            textarea.style.display = 'block';
-            textarea.value = JSON.stringify(fetchProcesses(), null, 2);
-        }
-
-        function intruderWaterPlay() {
-            alert("Surprise! You've been caught watching!");
-            document.body.style.animation = 'shake 0.5s';
-            setTimeout(() => {
-                document.body.style.animation = '';
-            }, 500);
+        function changeSort() {
+            sortCriteria = $('#sortSelect').value;
+            fetchProcesses(); // Manually refresh when sorting changes
         }
 
         function toggleDarkMode() {
             isDarkMode = !isDarkMode;
             document.body.style.backgroundColor = isDarkMode ? '#333' : '#fff';
-            document.body.style.color = isDarkMode ? '#fff' : '#000';
+            document.body.style.color = isDarkMode ? '#fff' : '#333';
+            $$('.button').forEach(button => {
+                button.style.backgroundColor = isDarkMode ? '#555' : '';
+                button.style.color = isDarkMode ? '#fff' : '';
+            });
+        }
+
+        function analyzeCyberSpaceHaze() {
+            const textarea = $('#analysisTextarea');
+            textarea.style.display = 'block';
+            // Use HTML line breaks for formatting
+            textarea.innerHTML = "Analyzing Cyber Space Haze...<br>1. Quantum Flux: Stable<br>2. Nebula Density: 78%<br>3. Void Resonance: Harmonic<br>4. Starlight Interference: Minimal<br>5. Plasma Conductivity: Optimal<br>Conclusion: The Cyber Space Haze is currently in a favorable state for data transmission.";
+        }
+
+        function intruderWaterPlay() {
+            showMessage("Intruder detected! Initiating WaterPlay protocol...");
+            document.body.style.animation = 'shake 0.5s';
+            setTimeout(() => {
+                document.body.style.animation = '';
+            }, 500);
         }
 
         function changeBackgroundColor() {
@@ -414,54 +573,101 @@ def create_static_files():
         }
 
         function confettiEffect() {
-            const confetti = document.createElement('div');
-            confetti.style.position = 'absolute';
-            confetti.style.top = '0';
-            confetti.style.left = '0';
-            confetti.style.width = '100%';
-            confetti.style.height = '100%';
-            confetti.style.background = 'url("https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif") no-repeat center center';
-            confetti.style.backgroundSize = 'cover';
-            confetti.style.zIndex = '9999';
-            document.body.appendChild(confetti);
-            setTimeout(() => {
-                document.body.removeChild(confetti);
-            }, 3000);
+            const confettiCount = 200;
+            const confettiColors = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#ff00ff', '#00ffff'];
+
+            for (let i = 0; i < confettiCount; i++) {
+                const confetti = document.createElement('div');
+                confetti.style.position = 'fixed';
+                confetti.style.width = '10px';
+                confetti.style.height = '10px';
+                confetti.style.backgroundColor = confettiColors[Math.floor(Math.random() * confettiColors.length)];
+                confetti.style.left = Math.random() * 100 + 'vw';
+                confetti.style.top = '-10px';
+                confetti.style.borderRadius = '50%';
+                confetti.style.zIndex = '9999';
+                document.body.appendChild(confetti);
+
+                const animation = confetti.animate([
+                    { transform: 'translateY(0) rotate(0deg)', opacity: 1 },
+                    { transform: `translateY(100vh) rotate(${Math.random() * 360}deg)`, opacity: 0 }
+                ], {
+                    duration: Math.random() * 3000 + 2000,
+                    easing: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)'
+                });
+
+                animation.onfinish = () => confetti.remove();
+            }
         }
 
-        function synthesizeLFOEnvenlopeEqualizerNoiseVocoderFFTDataStream() {
+        function synthesizeAudio() {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+
+            oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(440, audioContext.currentTime);
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+            gainNode.gain.linearRampToValueAtTime(1, audioContext.currentTime + 0.01);
+
+            oscillator.start(audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 1);
+            oscillator.stop(audioContext.currentTime + 1);
+
             alert("Synthesizing LFO Envelope Equalizer Noise Vocoder FFT Data Stream...");
-            document.body.style.background = 'linear-gradient(45deg, #ff00ff, #00ffff, #ffff00, #ff00ff, #00ffff, #ffff00)';
-            document.body.style.backgroundSize = '400% 400%';
-            document.body.style.animation = 'gradient 5s ease infinite';
-            setTimeout(() => {
-                document.body.style.background = '';
-                document.body.style.animation = '';
-            }, 5000);
         }
 
-        function changeColorScheme() {
-            colorIndex = (colorIndex + 1) % colorSchemes.length;
-            const scheme = colorSchemes[colorIndex];
-            document.body.style.backgroundColor = scheme.bg;
-            document.body.style.color = scheme.text;
+        function showMessage(message) {
+            // Create a simple message box
+            const messageBox = document.createElement('div');
+            messageBox.style.position = 'fixed';
+            messageBox.style.top = '50%';
+            messageBox.style.left = '50%';
+            messageBox.style.transform = 'translate(-50%, -50%)';
+            messageBox.style.backgroundColor = 'white';
+            messageBox.style.padding = '20px';
+            messageBox.style.border = '1px solid black';
+            messageBox.style.zIndex = '10001'; // Ensure it's above the loading spinner
+            messageBox.textContent = message;
+            document.body.appendChild(messageBox);
+
+            // Add a close button
+            const closeButton = document.createElement('button');
+            closeButton.textContent = 'Close';
+            closeButton.style.marginTop = '10px';
+            closeButton.onclick = () => messageBox.remove();
+            messageBox.appendChild(closeButton);
         }
 
+        function toggleChart() {
+            const chartContainer = $('#trafficChartContainer');
+            if (chartContainer.style.display === 'none') {
+                chartContainer.style.display = 'block';
+            } else {
+                chartContainer.style.display = 'none';
+            }
+        }
+
+        // Initialize EventSource for real-time updates
+        const eventSource = new EventSource('/process_stream');
+
+        eventSource.onmessage = (event) => {
+            const processes = JSON.parse(event.data);
+            updateProcessList(processes);
+            updateChart(processes);
+        };
+
+        // Initial data fetch
         fetchProcesses();
-        intervalId = setInterval(fetchProcesses, intervalTime);
-        setInterval(changeColorScheme, 30000); // Change color scheme every 30 seconds
     </script>
 </body>
 </html>
-
-''')
-
-def elevate_permissions():
-    logger.info("Elevating permissions...")
-    subprocess.run(['sudo', 'python', __file__])
+"""
 
 if __name__ == '__main__':
     check_root()
-    create_static_files()
     webbrowser.open('http://127.0.0.1:5000')
     app.run(debug=True)

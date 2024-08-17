@@ -4,57 +4,40 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WaterWall Control</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.9.4/css/bulma.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/spin.js/2.3.2/spin.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body {
-            font-family: Arial, sans-serif;
+            padding: 20px;
             transition: background-color 0.5s, color 0.5s;
+        }
+        .container {
+            max-width: 120rem;
         }
         table {
             width: 100%;
-            border-collapse: collapse;
-        }
-        table, th, td {
-            border: 1px solid black;
-        }
-        th, td {
-            padding: 8px;
-            text-align: left;
         }
         canvas {
             max-width: 100%;
             height: auto;
+            margin-bottom: 20px;
         }
         #intervalInput {
+            width: 100px;
             margin-right: 10px;
         }
-        #analyzeButton, #intruderButton, #darkModeButton, #colorButton, #confettiButton, #synthesizeButton, #refreshButton {
-            margin-top: 20px;
+        .button-row {
+            margin-bottom: 20px;
+        }
+        .button-row button {
             margin-right: 10px;
+            margin-bottom: 10px;
         }
         #analysisTextarea {
             display: none;
             width: 100%;
             height: 200px;
-        }
-        @keyframes shake {
-            0% { transform: translate(1px, 1px) rotate(0deg); }
-            10% { transform: translate(-1px, -2px) rotate(-1deg); }
-            20% { transform: translate(-3px, 0px) rotate(1deg); }
-            30% { transform: translate(3px, 2px) rotate(0deg); }
-            40% { transform: translate(1px, -1px) rotate(1deg); }
-            50% { transform: translate(-1px, 2px) rotate(-1deg); }
-            60% { transform: translate(-3px, 1px) rotate(0deg); }
-            70% { transform: translate(3px, 1px) rotate(-1deg); }
-            80% { transform: translate(-1px, -1px) rotate(1deg); }
-            90% { transform: translate(1px, 2px) rotate(0deg); }
-            100% { transform: translate(1px, -2px) rotate(-1deg); }
-        }
-        @keyframes gradient {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
+            margin-top: 20px;
         }
         .loading {
             display: none;
@@ -74,245 +57,318 @@
             width: 50px;
             height: 50px;
             border: 5px solid #f3f3f3;
-            border-top: 5px solid #3498db;
+            border-top: 5px solid #9b4dca;
             border-radius: 50%;
             animation: spin 1s linear infinite;
         }
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+            0% { transform: translate(-50%, -50%) rotate(0deg); }
+            100% { transform: translate(-50%, -50%) rotate(360deg); }
+        }
+        .process-card {
+            border: 1px solid #e1e1e1;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 5px;
+        }
+        .process-card h3 {
+            margin-bottom: 10px;
+        }
+        .error-message {
+            color: #721c24;
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            padding: 10px;
+            margin-bottom: 15px;
+            border-radius: 5px;
+            display: none;
         }
     </style>
 </head>
 <body>
-    <section class="section">
-        <div class="container">
-            <h1 class="title">WaterWall Control</h1>
-            <div class="buttons">
-                <button class="button is-primary" onclick="refreshData()">Refresh</button>
-                <button class="button is-dark" onclick="toggleDarkMode()">Toggle Dark Mode</button>
-                <button class="button is-info" onclick="analyzeCyberSpaceHaze()">AI Analyze Cyber Space Haze</button>
-                <button class="button is-warning" onclick="intruderWaterPlay()">IntruderWaterPlay</button>
-                <button class="button is-danger" onclick="confettiEffect()">Confetti</button>
-                <button class="button is-success" onclick="synthesizeLFOEnvenlopeEqualizerNoiseVocoderFFTDataStream()">Synthesize LFO Envelope Equalizer Noise Vocoder FFT Data Stream</button>
-                <button class="button is-link" onclick="changeBackgroundColor()">Random Color</button>
-            </div>
-            <div>
+    <div class="container">
+        <h1>WaterWall Control</h1>
+        <div class="button-row">
+            <button onclick="refreshData()">Refresh</button>
+            <button onclick="toggleDarkMode()">Toggle Dark Mode</button>
+            <button onclick="analyzeCyberSpaceHaze()">AI Analyze</button>
+            <button onclick="intruderWaterPlay()">IntruderWaterPlay</button>
+            <button onclick="confettiEffect()">Confetti</button>
+            <button onclick="synthesizeAudio()">Synthesize Audio</button>
+            <button onclick="changeBackgroundColor()">Random Color</button>
+        </div>
+        <div class="row">
+            <div class="column">
                 <label for="intervalInput">Refresh Interval (ms):</label>
                 <input type="number" id="intervalInput" value="5000">
                 <button onclick="setIntervalTime()">Set Interval</button>
             </div>
-            <canvas id="trafficChart"></canvas>
-            <table id="processTable">
-                <thead>
-                    <tr>
-                        <th onclick="sortTable(0)">PID [A]/[D]</th>
-                        <th onclick="sortTable(1)">Name [A]/[D]</th>
-                        <th onclick="sortTable(2)">Traffic Usage (bytes) [A]/[D]</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                </tbody>
-            </table>
-            <textarea id="analysisTextarea"></textarea>
-            <div class="loading">
-                <div class="spinner"></div>
+            <div class="column">
+                <label for="sortSelect">Sort by:</label>
+                <select id="sortSelect" onchange="changeSort()">
+                    <option value="traffic_desc">Traffic (High to Low)</option>
+                    <option value="traffic_asc">Traffic (Low to High)</option>
+                    <option value="name_asc">Name (A to Z)</option>
+                    <option value="name_desc">Name (Z to A)</option>
+                    <option value="pid_asc">PID (Low to High)</option>
+                    <option value="pid_desc">PID (High to Low)</option>
+                </select>
             </div>
         </div>
-    </section>
+        <canvas id="trafficChart"></canvas>
+        <div id="errorMessage" class="error-message"></div>
+        <div id="processList"></div>
+        <textarea id="analysisTextarea"></textarea>
+        <div class="loading">
+            <div class="spinner"></div>
+        </div>
+    </div>
     <script>
-        const dgei = document.getElementById.bind(document);
-        const dqsel = document.querySelector.bind(document);
-        const dqselAll = document.querySelectorAll.bind(document);
+        const $ = document.querySelector.bind(document);
+        const $$ = document.querySelectorAll.bind(document);
 
         let intervalTime = 5000;
         let intervalId;
         let isDarkMode = false;
-        let colorIndex = 0;
-        let sortOrder = 'desc';
-        const colorSchemes = [
-            { bg: '#f8f9fa', text: '#212529' },
-            { bg: '#e9ecef', text: '#343a40' },
-            { bg: '#dee2e6', text: '#495057' },
-            { bg: '#ced4da', text: '#6c757d' },
-            { bg: '#adb5bd', text: '#868e96' }
-        ];
+        let chart;
+        let sortCriteria = 'traffic_desc';
 
         async function fetchProcesses() {
-            dqsel('.loading').style.display = 'block';
-            const response = await fetch(`/processes?sort=${sortOrder}`);
-            const processes = await response.json();
-            if (processes.error) {
-                alert(processes.error);
-                return;
+            $('.loading').style.display = 'block';
+            try {
+                const response = await fetch(`/processes?sort=${sortCriteria}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const processes = await response.json();
+                updateProcessList(processes);
+                updateChart(processes);
+                $('#errorMessage').style.display = 'none';
+            } catch (error) {
+                console.error('Error fetching processes:', error);
+                $('#errorMessage').textContent = `Error: ${error.message}. Please check your connection and try again.`;
+                $('#errorMessage').style.display = 'block';
+            } finally {
+                $('.loading').style.display = 'none';
             }
-            const tableBody = dqsel('#processTable tbody');
-            tableBody.innerHTML = '';
+        }
+
+        function updateProcessList(processes) {
+            const processList = $('#processList');
+            processList.innerHTML = '';
             processes.forEach(process => {
-                const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td>${process.pid}</td>
-                    <td>${process.name}</td>
-                    <td>${process.traffic_usage} bytes (${process.traffic_usage_mb.toFixed(2)} MB)</td>
-                    <td>
-                        <button ${process.blocked ? 'disabled' : ''} onclick="blockProcess(${process.pid})">Block</button>
-                        <button ${!process.blocked ? 'disabled' : ''} onclick="unblockProcess(${process.pid})">Unblock</button>
-                        <input type="number" id="limit${process.pid}" min="0" max="100" placeholder="Limit %" value="${process.limit || ''}">
-                        <button onclick="setLimit(${process.pid})">Set Limit</button>
-                    </td>
+                const card = document.createElement('div');
+                card.className = 'process-card';
+                card.innerHTML = `
+                    <h3>${process.name} (PID: ${process.pid})</h3>
+                    <p>Traffic Usage: ${(process.traffic_usage_mb).toFixed(2)} MB</p>
+                    <p>Status: ${process.blocked ? 'Blocked' : 'Active'}</p>
+                    <button onclick="toggleBlock(${process.pid}, ${process.blocked})">${process.blocked ? 'Unblock' : 'Block'}</button>
+                    <input type="number" id="limit${process.pid}" min="0" max="100" placeholder="Limit %" value="${process.limit || ''}">
+                    <button onclick="setLimit(${process.pid})">Set Limit</button>
                 `;
-                tableBody.appendChild(row);
+                processList.appendChild(card);
             });
-            updateChart(processes);
-            dqsel('.loading').style.display = 'none';
-        }
-
-        async function blockProcess(pid) {
-            await fetch('/block', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ pid })
-            });
-            fetchProcesses();
-        }
-
-        async function unblockProcess(pid) {
-            await fetch('/unblock', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ pid })
-            });
-            fetchProcesses();
-        }
-
-        async function setLimit(pid) {
-            const limit = dgei(`limit${pid}`).value;
-            await fetch('/limit', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ pid, percentage: limit })
-            });
-            fetchProcesses();
         }
 
         function updateChart(processes) {
+            const ctx = $('#trafficChart').getContext('2d');
             const labels = processes.map(p => p.name);
-            const data = processes.map(p => p.traffic_usage);
-            const ctx = dgei('trafficChart').getContext('2d');
-            new Chart(ctx, {
+            const data = processes.map(p => p.traffic_usage_mb);
+
+            if (chart) {
+                chart.destroy();
+            }
+
+            chart = new Chart(ctx, {
                 type: 'bar',
                 data: {
                     labels: labels,
                     datasets: [{
-                        label: 'Traffic Usage (bytes)',
+                        label: 'Traffic Usage (MB)',
                         data: data,
-                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
-                        borderColor: 'rgba(75, 192, 192, 1)',
+                        backgroundColor: 'rgba(155, 77, 202, 0.6)',
+                        borderColor: 'rgba(155, 77, 202, 1)',
                         borderWidth: 1
                     }]
                 },
                 options: {
                     scales: {
                         y: {
-                            beginAtZero: true
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Traffic Usage (MB)'
+                            }
                         }
-                    }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        title: {
+                            display: true,
+                            text: 'Process Traffic Usage'
+                        }
+                    },
+                    responsive: true,
+                    maintainAspectRatio: false
                 }
             });
+        }
+
+        async function toggleBlock(pid, currentlyBlocked) {
+            $('.loading').style.display = 'block';
+            try {
+                const action = currentlyBlocked ? 'unblock' : 'block';
+                const response = await fetch(`/${action}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ pid })
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                await fetchProcesses();
+            } catch (error) {
+                console.error(`Error ${currentlyBlocked ? 'unblocking' : 'blocking'} process:`, error);
+                $('#errorMessage').textContent = `Error: ${error.message}. Please try again.`;
+                $('#errorMessage').style.display = 'block';
+            } finally {
+                $('.loading').style.display = 'none';
+            }
+        }
+
+        async function setLimit(pid) {
+            const limit = $(`#limit${pid}`).value;
+            $('.loading').style.display = 'block';
+            try {
+                const response = await fetch('/limit', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ pid, percentage: limit })
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                await fetchProcesses();
+            } catch (error) {
+                console.error('Error setting limit:', error);
+                $('#errorMessage').textContent = `Error: ${error.message}. Please try again.`;
+                $('#errorMessage').style.display = 'block';
+            } finally {
+                $('.loading').style.display = 'none';
+            }
         }
 
         function setIntervalTime() {
             clearInterval(intervalId);
-            intervalTime = parseInt(dgei('intervalInput').value, 10);
+            intervalTime = parseInt($('#intervalInput').value, 10);
             intervalId = setInterval(fetchProcesses, intervalTime);
         }
 
-        function sortTable(columnIndex) {
-            const table = dgei('processTable');
-            const rows = Array.from(table.rows).slice(1);
-            const isNumber = columnIndex === 0 || columnIndex === 2;
-            rows.sort((a, b) => {
-                const aValue = a.cells[columnIndex].textContent.trim();
-                const bValue = b.cells[columnIndex].textContent.trim();
-                if (isNumber) {
-                    return (sortOrder === 'asc' ? 1 : -1) * (parseInt(aValue, 10) - parseInt(bValue, 10));
-                } else {
-                    return (sortOrder === 'asc' ? 1 : -1) * aValue.localeCompare(bValue);
-                }
+        function changeSort() {
+            sortCriteria = $('#sortSelect').value;
+            fetchProcesses();
+        }
+
+        function toggleDarkMode() {
+            isDarkMode = !isDarkMode;
+            document.body.style.backgroundColor = isDarkMode ? '#333' : '#fff';
+            document.body.style.color = isDarkMode ? '#fff' : '#333';
+            $$('.button').forEach(button => {
+                button.style.backgroundColor = isDarkMode ? '#555' : '';
+                button.style.color = isDarkMode ? '#fff' : '';
             });
-            rows.forEach(row => table.tBodies[0].appendChild(row));
-            sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
         }
 
         function analyzeCyberSpaceHaze() {
-            const textarea = dgei('analysisTextarea');
+            const textarea = $('#analysisTextarea');
             textarea.style.display = 'block';
-            textarea.value = JSON.stringify(fetchProcesses(), null, 2);
+            textarea.value = "Analyzing Cyber Space Haze...
+
+";
+            textarea.value += "1. Quantum Flux: Stable
+";
+            textarea.value += "2. Nebula Density: 78%
+";
+            textarea.value += "3. Void Resonance: Harmonic
+";
+            textarea.value += "4. Starlight Interference: Minimal
+";
+            textarea.value += "5. Plasma Conductivity: Optimal
+
+";
+            textarea.value += "Conclusion: The Cyber Space Haze is currently in a favorable state for data transmission.";
         }
 
         function intruderWaterPlay() {
-            alert("Surprise! You've been caught watching!");
+            alert("Intruder detected! Initiating WaterPlay protocol...");
             document.body.style.animation = 'shake 0.5s';
             setTimeout(() => {
                 document.body.style.animation = '';
             }, 500);
         }
 
-        function toggleDarkMode() {
-            isDarkMode = !isDarkMode;
-            document.body.style.backgroundColor = isDarkMode ? '#333' : '#fff';
-            document.body.style.color = isDarkMode ? '#fff' : '#000';
-        }
-
         function changeBackgroundColor() {
-            const randomColor = '#' + Math.floor(Math.random() * 16777215).toString(16);
+            const randomColor = '#' + Math.floor(Math.random()*16777215).toString(16);
             document.body.style.backgroundColor = randomColor;
         }
 
         function confettiEffect() {
-            const confetti = document.createElement('div');
-            confetti.style.position = 'absolute';
-            confetti.style.top = '0';
-            confetti.style.left = '0';
-            confetti.style.width = '100%';
-            confetti.style.height = '100%';
-            confetti.style.background = 'url("https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif") no-repeat center center';
-            confetti.style.backgroundSize = 'cover';
-            confetti.style.zIndex = '9999';
-            document.body.appendChild(confetti);
-            setTimeout(() => {
-                document.body.removeChild(confetti);
-            }, 3000);
+            const confettiCount = 200;
+            const confettiColors = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#ff00ff', '#00ffff'];
+            
+            for (let i = 0; i < confettiCount; i++) {
+                const confetti = document.createElement('div');
+                confetti.style.position = 'fixed';
+                confetti.style.width = '10px';
+                confetti.style.height = '10px';
+                confetti.style.backgroundColor = confettiColors[Math.floor(Math.random() * confettiColors.length)];
+                confetti.style.left = Math.random() * 100 + 'vw';
+                confetti.style.top = '-10px';
+                confetti.style.borderRadius = '50%';
+                confetti.style.zIndex = '9999';
+                document.body.appendChild(confetti);
+
+                const animation = confetti.animate([
+                    { transform: 'translateY(0) rotate(0deg)', opacity: 1 },
+                    { transform: `translateY(100vh) rotate(${Math.random() * 360}deg)`, opacity: 0 }
+                ], {
+                    duration: Math.random() * 3000 + 2000,
+                    easing: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)'
+                });
+
+                animation.onfinish = () => confetti.remove();
+            }
         }
 
-        function synthesizeLFOEnvenlopeEqualizerNoiseVocoderFFTDataStream() {
+        function synthesizeAudio() {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+
+            oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(440, audioContext.currentTime);
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+            gainNode.gain.linearRampToValueAtTime(1, audioContext.currentTime + 0.01);
+            
+            oscillator.start(audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 1);
+            oscillator.stop(audioContext.currentTime + 1);
+
             alert("Synthesizing LFO Envelope Equalizer Noise Vocoder FFT Data Stream...");
-            document.body.style.background = 'linear-gradient(45deg, #ff00ff, #00ffff, #ffff00, #ff00ff, #00ffff, #ffff00)';
-            document.body.style.backgroundSize = '400% 400%';
-            document.body.style.animation = 'gradient 5s ease infinite';
-            setTimeout(() => {
-                document.body.style.background = '';
-                document.body.style.animation = '';
-            }, 5000);
-        }
-
-        function changeColorScheme() {
-            colorIndex = (colorIndex + 1) % colorSchemes.length;
-            const scheme = colorSchemes[colorIndex];
-            document.body.style.backgroundColor = scheme.bg;
-            document.body.style.color = scheme.text;
         }
 
         fetchProcesses();
         intervalId = setInterval(fetchProcesses, intervalTime);
-        setInterval(changeColorScheme, 30000); // Change color scheme every 30 seconds
     </script>
 </body>
 </html>
