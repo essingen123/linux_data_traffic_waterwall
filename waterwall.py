@@ -9,8 +9,7 @@ import time
 from pynput import mouse, keyboard
 import random
 from collections import deque
-# author:kilian lindberg
-# license: mit + %303*
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -733,7 +732,7 @@ def index():
         function toggleDarkMode() {
             isDarkMode = !isDarkMode;
             document.body.style.backgroundColor = isDarkMode ? '#333' : '#fff';
-            document.body.style.color = isDarkMode ? '#fff' : '#333';
+            document.body.style.color = isDarkMode ? '#fff' : '#000';
             $$('.button').forEach(button => {
                 button.style.backgroundColor = isDarkMode ? '#555' : '';
                 button.style.color = isDarkMode ? '#fff' : '';
