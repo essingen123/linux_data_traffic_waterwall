@@ -17,10 +17,10 @@ set303c=public
 set303d=y
 
 # tags, separated by commas
-set303e=Git, Bash, Automation, Automagic, un-PEP8-perhaps
+set303e=Vuvuviva, Whimsy, CyberSeefurity
 
 # description
-set303f=Vuvuviva Scan Pencil Assessment Fiesta: A friendly guide to CyberSeefurity, helping a coconut grow your understanding, learn to identify and prioritize treats of carrots and bloom loom flower power with actionable banana split to keep your digital cassettes of a C64 etc.
+set303f=Vuvuviva Scan Pencil Assessment Fiesta: A friendly guide to CyberSeefurity, helping a coconut grow your understanding, learn to identify and prioritize treats🎁 of carrots and bloom loom flower power with actionable banana split to keep your digital cassettes of a C64, while riding a unicorn on a rainbow 🌈🦄
 
 # website URL
 set303g=https://essingen123.github.io/linux_data_traffic_waterwall
