@@ -62,13 +62,13 @@ def save_state(state):
     with open(STATE_FILE, 'w') as f:
         json.dump(state, f)
 
-# Get a list of all running processes (with caching, historical data, and total bandwidth usage)
+# Get a list of all running processes
 def get_processes():
     global process_cache, historical_data, total_bandwidth_usage
     current_time = time.time()
     if not process_cache or current_time - process_cache['timestamp'] > 1:  # Refresh cache every 1 second
         process_cache = {'timestamp': current_time, 'processes': []}
-        total_bandwidth_usage = 0  # Reset total bandwidth usage
+        total_bandwidth_usage = 0
         for p in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'num_threads', 'io_counters']):
             try:
                 process_info = p.info
@@ -83,40 +83,25 @@ def get_processes():
                 historical_data[pid].append(traffic_usage_mb)
 
                 process_cache['processes'].append(process_info)
-
-                # Update total bandwidth usage
                 total_bandwidth_usage += traffic_usage_mb
 
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 pass
     return process_cache['processes']
 
-# Block traffic for a specific process
+# Network Management Functions (using iptables)
 def block_process(pid):
     subprocess.run(["iptables", "-A", "OUTPUT", "-m", "owner", "--uid-owner", str(pid), "-j", "DROP"])
 
-# Unblock traffic for a specific process
 def unblock_process(pid):
     subprocess.run(["iptables", "-D", "OUTPUT", "-m", "owner", "--uid-owner", str(pid), "-j", "DROP"])
 
-# Set traffic limit for a process (as a percentage of total bandwidth)
 def set_traffic_limit(pid, percentage):
-    bandwidth_limit = int(1024 * 1024 * percentage / 100)  # Convert to bytes per second
-    subprocess.run(["iptables", "-A", "OUTPUT", "-m", "owner", "--uid-owner", str(pid), "-m", "limit", "--limit-burst", str(bandwidth_limit), "-j", "ACCEPT"])
+    # Calculate bandwidth limit in bytes per second
+    bandwidth_limit = int(1024 * 1024 * percentage / 100) 
+    subprocess.run(["iptables", "-A", "OUTPUT", "-m", "owner", "--uid-owner", str(pid), "-m", "limit", "--limit-bytes", str(bandwidth_limit)+"/s", "-j", "ACCEPT"])
 
-# Get the current traffic usage for a process
-def get_traffic_usage(pid):
-    try:
-        p = psutil.Process(pid)
-        io_counters = p.io_counters()
-        return io_counters.read_bytes + io_counters.write_bytes
-    except psutil.NoSuchProcess:
-        logger.warning(f"Process with PID {pid} no longer exists.")
-        return 0
-    except psutil.AccessDenied:
-        raise PermissionError("Permission denied. Please run with sudo.")
-
-# Function to detect user activity
+# User Activity Monitoring
 def on_move(x, y):
     global last_activity_time
     last_activity_time = time.time()
@@ -129,27 +114,26 @@ def on_press(key):
     global last_activity_time
     last_activity_time = time.time()
 
-# Start mouse and keyboard listeners
+# Start listeners
 mouse_listener = mouse.Listener(on_move=on_move, on_click=on_click)
 keyboard_listener = keyboard.Listener(on_press=on_press)
 mouse_listener.start()
 keyboard_listener.start()
 
-# Function to check if the user is away
 def is_user_away():
     return time.time() - last_activity_time > idle_threshold
 
-# Function to throttle system processes
+# Process Throttling (using nice)
 def throttle_processes():
     for proc in psutil.process_iter(attrs=['pid', 'name', 'cpu_percent', 'memory_percent']):
         try:
-            # Throttle CPU usage to a minimal level
             p = psutil.Process(proc.info['pid'])
-            p.nice(psutil.IDLE_PRIORITY_CLASS)
+            p.nice(psutil.IDLE_PRIORITY_CLASS)  # Set to lowest priority
             logger.info(f"Throttled process: {proc.info['name']} (PID: {proc.info['pid']})")
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             pass
 
+# Flask API Endpoints
 @app.route('/processes', methods=['GET'])
 def list_processes():
     try:
@@ -178,26 +162,19 @@ def list_processes():
                 'historical_data': list(historical_data.get(pid, []))
             })
 
-        # Sort processes
-        sort_column = request.args.get('sort', 'traffic_usage')
-        sort_order = request.args.get('order', 'desc')
+        # Sorting Logic (Improved)
+        sort_by = request.args.get('sort_by', 'traffic_usage')
+        sort_order = request.args.get('sort_order', 'desc')
 
-        # Map sort_column to the correct field
-        sort_mapping = {
-            'traffic_desc': 'traffic_usage',
-            'traffic_asc': 'traffic_usage',
-            'name_asc': 'name',
-            'name_desc': 'name',
-            'pid_asc': 'pid',
-            'pid_desc': 'pid'
-        }
-
-        # Use the mapped field for sorting
-        sort_key = sort_mapping.get(sort_column, 'traffic_usage')  # Default to traffic_usage if not found
-
-        process_info.sort(key=lambda x: x[sort_key], reverse=(sort_order == 'desc'))
+        if sort_by == 'traffic_usage':
+            process_info.sort(key=lambda x: x['traffic_usage_mb'], reverse=(sort_order == 'desc'))
+        elif sort_by == 'name':
+            process_info.sort(key=lambda x: x['name'], reverse=(sort_order == 'desc'))
+        elif sort_by == 'pid':
+            process_info.sort(key=lambda x: x['pid'], reverse=(sort_order == 'desc'))
 
         return jsonify(process_info)
+
     except PermissionError as e:
         logger.error(str(e))
         return jsonify({'error': str(e)}), 500
@@ -239,6 +216,7 @@ def throttle():
     throttle_processes()
     return jsonify({'status': 'success'})
 
+# Server-Sent Events (SSE) for Real-time Updates
 @app.route('/process_stream')
 def process_stream():
     def generate():
@@ -267,11 +245,14 @@ def process_stream():
                     'limit': state.get(str(pid), {}).get('limit', None),
                     'historical_data': list(historical_data.get(pid, []))
                 })
-            yield f"data: {json.dumps({'processes': process_info, 'total_bandwidth_usage': total_bandwidth_usage})}\n\n"
+
+            # Send the processes array directly
+            yield f"data: {json.dumps(process_info)}\n\n"  # Fixed: Send array directly
             time.sleep(intervalTime / 1000)
 
     return Response(generate(), mimetype='text/event-stream')
 
+# HTML for the Web Interface
 @app.route('/')
 def index():
     return """
@@ -283,7 +264,7 @@ def index():
     <title>WaterWall Control</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
+ <style>
         body {
             padding: 20px;
             transition: background-color 0.5s, color 0.5s;
@@ -454,7 +435,7 @@ def index():
             <button onclick="toggleChart()">Show/Hide Graph</button>
             <button onclick="toggleGraphRefresh()">Toggle Graph Refresh</button>
         </div>
-        <div id="analysisTextarea" class="analysis-textarea"></div> 
+        <div id="analysisTextarea" class="analysis-textarea"></div>
         <div id="feedbackArea"></div>
         <div class="row">
             <div class="column">
@@ -492,7 +473,7 @@ def index():
         </div>
         <div class="notification-cue"></div>
     </div>
-    <script>
+      <script>
         const $ = document.querySelector.bind(document);
         const $$ = document.querySelectorAll.bind(document);
 
@@ -594,71 +575,72 @@ def index():
         }
 
         function updateChart() {
-            if (!graphRefreshEnabled) {
-                return; // Don't update the chart if refreshing is disabled
+    if (!graphRefreshEnabled) {
+        return; // Don't update the chart if refreshing is disabled
+    }
+
+    const ctx = $('#trafficChart').getContext('2d');
+
+    // Fetch latest process data
+    fetch('/processes')
+        .then(response => response.json())
+        .then(processes => {
+            const labels = generateTimeLabels();
+            const datasets = processes.map(p => ({
+                label: p.name,
+                data: p.historical_data, // Use historical data for the line chart
+                borderColor: `rgba(${Math.floor(Math.random() * 256)}, ${Math.floor(Math.random() * 256)}, ${Math.floor(Math.random() * 256)}, 1)`, // Use Math.random() for random colors
+                borderWidth: 1,
+                fill: false
+            }));
+
+            if (chart) {
+                chart.destroy();
             }
 
-            const ctx = $('#trafficChart').getContext('2d');
-            
-            // Fetch latest process data
-            fetch('/processes')
-                .then(response => response.json())
-                .then(processes => {
-                    const labels = generateTimeLabels();
-                    const datasets = processes.map(p => ({
-                        label: p.name,
-                        data: p.historical_data, // Use historical data for the line chart
-                        borderColor: `rgba(${random.randint(0, 255)}, ${random.randint(0, 255)}, ${random.randint(0, 255)}, 1)`,
-                        borderWidth: 1,
-                        fill: false
-                    }));
-
-                    if (chart) {
-                        chart.destroy();
-                    }
-
-                    chart = new Chart(ctx, {
-                        type: 'line', // Changed chart type to 'line' for historical data
-                        data: {
-                            labels: labels,
-                            datasets: datasets
+            chart = new Chart(ctx, {
+                type: 'line', // Changed chart type to 'line' for historical data
+                data: {
+                    labels: labels,
+                    datasets: datasets
+                },
+                options: {
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Traffic Usage (MB)'
+                            }
                         },
-                        options: {
-                            scales: {
-                                y: {
-                                    beginAtZero: true,
-                                    title: {
-                                        display: true,
-                                        text: 'Traffic Usage (MB)'
-                                    }
-                                },
-                                x: {
-                                    title: {
-                                        display: true,
-                                        text: 'Time'
-                                    }
-                                }
-                            },
-                            plugins: {
-                                legend: {
-                                    display: true
-                                },
-                                title: {
-                                    display: true,
-                                    text: 'Historical Process Traffic Usage'
-                                }
-                            },
-                            responsive: true,
-                            maintainAspectRatio: false
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Time'
+                            }
                         }
-                    });
-                })
-                .catch(error => {
-                    console.error('Error fetching process data for chart:', error);
-                });
-        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: true
+                        },
+                        title: {
+                            display: true,
+                            text: 'Historical Process Traffic Usage'
+                        }
+                    },
+                    responsive: true,
+                    maintainAspectRatio: false
+                }
+            });
+        })
+        .catch(error => {
+            console.error('Error fetching process data for chart:', error);
+        });
+}
 
         function generateTimeLabels() {
+            const max_history_length = 60; // Fixed: Define max_history_length in JavaScript
             const now = new Date();
             const labels = [];
             for (let i = 0; i < max_history_length; i++) {
@@ -819,27 +801,12 @@ def index():
         function closeMessageBox() {
             $('#messageBox').style.display = 'none';
         }
-
         function displayRandomQuote() {
             const quoteElement = $('#quote');
             const randomIndex = Math.floor(Math.random() * quotes.length);
             quoteElement.textContent = quotes[randomIndex];
         }
-
-        // Initialize EventSource for real-time updates
-        const eventSource = new EventSource('/process_stream');
-
-        eventSource.onmessage = (event) => {
-            const processes = JSON.parse(event.data);
-            updateProcessList(processes);
-            if (graphRefreshEnabled) {
-                updateChart(processes);
-            }
-        };
-
-        // Initial data fetch
-        fetchProcesses();
-        displayRandomQuote(); // Display a random quote on page load
+   
     </script>
 </body>
 </html>
