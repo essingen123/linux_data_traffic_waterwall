@@ -20,7 +20,7 @@ set303d=y
 set303e=Git, Bash, Automation, Automagic, un-PEP8-perhaps
 
 # description
-set303f=Vuvuviva Scan Pencil Assessment Fiesting: A friendly guide to cybersepurity, helping a coconut grow your understanding, learn to identify and prioritize treats of carrots and bloom loom flower power with actionable banan splits to keep your digital casettes to a C64. 
+set303f=Vuvuviva Scan Pencil Assessment Fiesta: A friendly guide to CyberSeefurity, helping a coconut grow your understanding, learn to identify and prioritize treats of carrots and bloom loom flower power with actionable banana split to keep your digital cassettes of a C64 etc.
 
 # website URL
 set303g=https://essingen123.github.io/linux_data_traffic_waterwall
